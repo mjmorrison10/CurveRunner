@@ -6,6 +6,9 @@ let map;
 let currentMode = 'auto';
 let waypoints = [];
 let waypointMarkers = [];
+let waypointIds = [];
+let waypointNames = new Map(); // id -> name
+const GEOCODE_CACHE = {}; // rounded coord key -> name
 const ROUTE_SOURCE = 'route-source';
 const ROUTE_LAYER = 'route-layer';
 let currentRoute = null;
@@ -368,6 +371,30 @@ function initUI() {
 
 /* ---------- Geolocation & Geocoding ---------- */
 
+function geocodeCacheKey(lon, lat) {
+  return lon.toFixed(3) + ',' + lat.toFixed(3);
+}
+
+async function reverseGeocode(lon, lat) {
+  const key = geocodeCacheKey(lon, lat);
+  if (GEOCODE_CACHE[key]) return GEOCODE_CACHE[key];
+  try {
+    const url = `https://nominatim.openstreetmap.org/reverse?format=json&lon=${lon}&lat=${lat}&zoom=14&accept-language=en`;
+    const res = await fetch(url, { headers: { 'User-Agent': 'CurveRunner/1.0' } });
+    if (!res.ok) return null;
+    const data = await res.json();
+    let name = data.display_name || data.name || null;
+    if (name) {
+      name = name.split(',')[0].trim();
+      if (name.length > 30) name = name.substring(0, 27) + '...';
+      GEOCODE_CACHE[key] = name;
+    }
+    return name;
+  } catch (e) {
+    return null;
+  }
+}
+
 async function geocode(query) {
   const url = `${NOMINATIM_URL}?format=json&q=${encodeURIComponent(query)}&limit=1`;
   const res = await fetch(url, { headers: { 'Accept-Language': 'en' } });
@@ -586,6 +613,16 @@ function addWaypoint(coords, index = null) {
     waypoints.push(coords);
   }
 
+  const id = Date.now() + '-' + Math.random();
+  waypointIds.splice(insertIndex, 0, id);
+
+  reverseGeocode(coords[0], coords[1]).then(name => {
+    if (name) {
+      waypointNames.set(id, name);
+      updateWaypointList();
+    }
+  });
+
   const el = document.createElement('div');
   el.className = 'waypoint-marker';
   el.textContent = insertIndex + 1;
@@ -632,6 +669,9 @@ function addWaypoint(coords, index = null) {
 
 function removeWaypoint(index) {
   if (index < 0 || index >= waypoints.length) return;
+  const id = waypointIds[index];
+  waypointNames.delete(id);
+  waypointIds.splice(index, 1);
   waypoints.splice(index, 1);
   waypointMarkers[index].remove();
   waypointMarkers.splice(index, 1);
@@ -654,6 +694,7 @@ function removeWaypoint(index) {
 function moveWaypointUp(index) {
   if (index <= 0) return;
   [waypoints[index], waypoints[index - 1]] = [waypoints[index - 1], waypoints[index]];
+  [waypointIds[index], waypointIds[index - 1]] = [waypointIds[index - 1], waypointIds[index]];
   [waypointMarkers[index], waypointMarkers[index - 1]] = [waypointMarkers[index - 1], waypointMarkers[index]];
   renumberMarkers();
   flashMarker(waypointMarkers[index - 1]);
@@ -668,6 +709,7 @@ function moveWaypointUp(index) {
 function moveWaypointDown(index) {
   if (index >= waypoints.length - 1) return;
   [waypoints[index], waypoints[index + 1]] = [waypoints[index + 1], waypoints[index]];
+  [waypointIds[index], waypointIds[index + 1]] = [waypointIds[index + 1], waypointIds[index]];
   [waypointMarkers[index], waypointMarkers[index + 1]] = [waypointMarkers[index + 1], waypointMarkers[index]];
   renumberMarkers();
   flashMarker(waypointMarkers[index]);
@@ -688,6 +730,8 @@ function renumberMarkers() {
 
 function clearWaypoints() {
   waypoints = [];
+  waypointIds = [];
+  waypointNames.clear();
   waypointMarkers.forEach(m => m.remove());
   waypointMarkers = [];
   updateWaypointList();
@@ -777,11 +821,13 @@ function updateWaypointList() {
       distStr = `<div class="meta">+${d.toFixed(1)} km from previous</div>`;
     }
 
+    const id = waypointIds[i];
+    const name = waypointNames.get(id);
     li.innerHTML = `
       <div style="display:flex;align-items:center;flex:1;min-width:0">
         <span class="idx">${i + 1}</span>
         <div class="name">
-          <span>Point ${i + 1}</span>
+          <span>${name ? name : 'Point ' + (i + 1)}</span>
           ${distStr}
         </div>
       </div>
