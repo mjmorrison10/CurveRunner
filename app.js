@@ -61,7 +61,47 @@ function initDB() {
   });
 }
 
+function getSavedMapView() {
+  try {
+    const center = localStorage.getItem('curveRunner_lastCenter');
+    const zoom = localStorage.getItem('curveRunner_lastZoom');
+    if (center && zoom) {
+      return { center: JSON.parse(center), zoom: parseFloat(zoom) };
+    }
+  } catch (e) {}
+  return null;
+}
+
+function saveMapView() {
+  if (!map) return;
+  try {
+    const c = map.getCenter();
+    localStorage.setItem('curveRunner_lastCenter', JSON.stringify([c.lng, c.lat]));
+    localStorage.setItem('curveRunner_lastZoom', map.getZoom());
+  } catch (e) {}
+}
+
+function autoLocate() {
+  if (!navigator.geolocation) return;
+  navigator.geolocation.getCurrentPosition(
+    pos => {
+      const coords = [pos.coords.longitude, pos.coords.latitude];
+      map.setCenter(coords);
+      map.setZoom(10);
+      saveMapView();
+    },
+    err => {
+      console.log('Auto-locate failed:', err);
+    },
+    { enableHighAccuracy: false, timeout: 10000 }
+  );
+}
+
 function initMap() {
+  const saved = getSavedMapView();
+  const initialCenter = saved ? saved.center : [-122.4194, 37.7749];
+  const initialZoom = saved ? saved.zoom : 10;
+
   map = new maplibregl.Map({
     container: 'map',
     style: {
@@ -78,8 +118,8 @@ function initMap() {
         { id: 'osm', type: 'raster', source: 'osm', minzoom: 0, maxzoom: 22 }
       ]
     },
-    center: [-122.4194, 37.7749],
-    zoom: 12,
+    center: initialCenter,
+    zoom: initialZoom,
     maxPitch: 0,
     attributionControl: false
   });
@@ -91,6 +131,13 @@ function initMap() {
     trackUserLocation: true,
     showUserLocation: true
   }));
+
+  map.on('moveend', saveMapView);
+  map.on('zoomend', saveMapView);
+
+  if (!saved) {
+    autoLocate();
+  }
 
   map.on('click', (e) => {
     if (currentMode === 'waypoints') {
