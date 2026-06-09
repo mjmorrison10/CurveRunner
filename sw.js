@@ -1,11 +1,12 @@
-const CACHE_NAME = 'curve-runner-v1';
+const CACHE_NAME = 'curve-runner-v2';
 const ASSETS = [
   './',
   './index.html',
   './style.css',
   './app.js',
   './manifest.json',
-  './icon.png'
+  './icon.png',
+  './favicon.png'
 ];
 
 self.addEventListener('install', (e) => {
@@ -16,7 +17,11 @@ self.addEventListener('install', (e) => {
 });
 
 self.addEventListener('activate', (e) => {
-  e.waitUntil(self.clients.claim());
+  e.waitUntil(
+    caches.keys().then(keys =>
+      Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k)))
+    ).then(() => self.clients.claim())
+  );
 });
 
 self.addEventListener('fetch', (e) => {
