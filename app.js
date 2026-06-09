@@ -540,13 +540,42 @@ async function fetchRoute(locations) {
   if (data.error) throw new Error(data.error);
   if (!data.trip || !data.trip.legs || !data.trip.legs.length) throw new Error('No route found');
 
-  const leg = data.trip.legs[0];
-  let coords = decodePolyline(leg.shape, 6);
-  if (coords.length < 2) coords = decodePolyline(leg.shape, 5);
+  // Concatenate all legs into a single continuous route
+  let allCoords = [];
+  let allManeuvers = [];
+  let shapeOffset = 0;
+
+  for (const leg of data.trip.legs) {
+    let coords = decodePolyline(leg.shape, 6);
+    if (coords.length < 2) coords = decodePolyline(leg.shape, 5);
+
+    // Avoid duplicating the last point of previous leg
+    if (allCoords.length > 0 && coords.length > 0) {
+      const last = allCoords[allCoords.length - 1];
+      const first = coords[0];
+      if (Math.abs(last[0] - first[0]) < 1e-6 && Math.abs(last[1] - first[1]) < 1e-6) {
+        coords = coords.slice(1);
+      }
+    }
+    allCoords = allCoords.concat(coords);
+
+    // Adjust maneuver shape indices to account for previous legs
+    if (leg.maneuvers) {
+      for (const m of leg.maneuvers) {
+        const adjusted = {
+          ...m,
+          begin_shape_index: (m.begin_shape_index || 0) + shapeOffset,
+          end_shape_index: (m.end_shape_index || 0) + shapeOffset
+        };
+        allManeuvers.push(adjusted);
+      }
+    }
+    shapeOffset += coords.length;
+  }
 
   return {
-    geometry: { type: 'LineString', coordinates: coords },
-    maneuvers: leg.maneuvers || [],
+    geometry: { type: 'LineString', coordinates: allCoords },
+    maneuvers: allManeuvers,
     length: data.trip.summary ? data.trip.summary.length : 0,
     time: data.trip.summary ? data.trip.summary.time : 0
   };
