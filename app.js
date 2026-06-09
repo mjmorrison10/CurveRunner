@@ -19,6 +19,8 @@ let rideTimerInterval = null;
 let db = null;
 let previewTimeout = null;
 let replayState = null;
+let isPremium = localStorage.getItem('curveRunner_premium') !== 'false';
+let autoRouteTimeout = null;
 
 document.addEventListener('DOMContentLoaded', async () => {
   try {
@@ -197,7 +199,72 @@ function initMap() {
   });
 }
 
+function updatePremiumUI() {
+  const btn = document.getElementById('btn-premium');
+  if (isPremium) {
+    btn.classList.add('active');
+    btn.textContent = 'PREMIUM';
+  } else {
+    btn.classList.remove('active');
+    btn.textContent = 'FREE';
+  }
+}
+
+function togglePremium() {
+  isPremium = !isPremium;
+  localStorage.setItem('curveRunner_premium', isPremium);
+  updatePremiumUI();
+  updateWaypointPanelUI();
+  if (isPremium && waypoints.length >= 2) {
+    showToast('Premium auto-routing enabled');
+    triggerAutoRoute();
+  } else if (!isPremium) {
+    showToast('Free mode: manual routing');
+  }
+}
+
+function updateWaypointPanelUI() {
+  const routeBtn = document.getElementById('btn-route-wp');
+  const hint = document.querySelector('#panel-waypoints .hint');
+  const autoPreview = document.getElementById('auto-preview');
+  const autoPreviewRow = autoPreview?.closest('.toggle-row');
+
+  if (isPremium) {
+    if (routeBtn) routeBtn.classList.add('hidden');
+    if (hint) hint.innerHTML = '<strong>Premium mode:</strong> Route auto-calculates as you add, move, or reorder points.';
+    if (autoPreviewRow) autoPreviewRow.classList.add('hidden');
+  } else {
+    if (routeBtn) routeBtn.classList.remove('hidden');
+    if (hint) hint.innerHTML = 'Tap map to add points. <strong>Drag</strong> markers to move. <strong>Tap</strong> the dashed line to insert. Reorder with arrows.';
+    if (autoPreviewRow) autoPreviewRow.classList.remove('hidden');
+  }
+}
+
+function triggerAutoRoute() {
+  if (!isPremium || waypoints.length < 2) return;
+  debouncedAutoRoute();
+}
+
+function debouncedAutoRoute() {
+  if (autoRouteTimeout) clearTimeout(autoRouteTimeout);
+  autoRouteTimeout = setTimeout(() => {
+    if (waypoints.length >= 2) {
+      calculateWaypointRoute(true, true);
+    }
+  }, 600);
+}
+
+function flashMarker(marker) {
+  const el = marker.getElement();
+  el.classList.remove('marker-flash');
+  void el.offsetWidth;
+  el.classList.add('marker-flash');
+  setTimeout(() => el.classList.remove('marker-flash'), 400);
+}
+
 function initUI() {
+  updatePremiumUI();
+
   document.querySelectorAll('.tab').forEach(tab => {
     tab.addEventListener('click', () => {
       document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -207,6 +274,7 @@ function initUI() {
       document.getElementById('panel-waypoints').classList.toggle('hidden', currentMode !== 'waypoints');
       if (currentMode === 'waypoints') {
         showPreviewLine();
+        updateWaypointPanelUI();
       } else {
         hidePreviewLine();
       }
@@ -221,7 +289,7 @@ function initUI() {
 
   document.getElementById('btn-gps-start').addEventListener('click', useCurrentLocationAsStart);
   document.getElementById('btn-route-auto').addEventListener('click', calculateAutoRoute);
-  document.getElementById('btn-route-wp').addEventListener('click', () => calculateWaypointRoute(false));
+  document.getElementById('btn-route-wp').addEventListener('click', () => calculateWaypointRoute(false, false));
   document.getElementById('btn-clear-wp').addEventListener('click', clearWaypoints);
   document.getElementById('btn-start-ride').addEventListener('click', startRide);
   document.getElementById('btn-stop-ride').addEventListener('click', stopRide);
@@ -235,6 +303,7 @@ function initUI() {
       debouncedRoutePreview();
     }
   });
+  document.getElementById('btn-premium').addEventListener('click', togglePremium);
   document.getElementById('btn-elevation').addEventListener('click', () => showElevationModalForRoute());
   document.getElementById('btn-replay-elevation').addEventListener('click', () => {
     if (replayState && replayState.ride) showElevationModalForRide(replayState.ride);
@@ -380,12 +449,12 @@ async function calculateAutoRoute() {
   }
 }
 
-async function calculateWaypointRoute(silent = false) {
+async function calculateWaypointRoute(silent = false, autoUpdate = false) {
   if (waypoints.length < 2) return showToast('Add at least 2 waypoints');
   try {
     const route = await fetchRoute(waypoints);
     currentRoute = route;
-    displayRoute(route);
+    displayRoute(route, !autoUpdate);
     hidePreviewLine();
     updateRouteStats(route.length, route.time, waypoints.length);
     document.getElementById('btn-start-ride').classList.remove('hidden');
@@ -483,18 +552,20 @@ function decodePolyline(str, precision = 6) {
   return coordinates;
 }
 
-function displayRoute(route) {
+function displayRoute(route, fit = true) {
   map.getSource(ROUTE_SOURCE).setData({
     type: 'Feature',
     geometry: route.geometry
   });
 
-  const bounds = route.geometry.coordinates.reduce((b, c) => {
-    if (!b) return new maplibregl.LngLatBounds(c, c);
-    b.extend(c);
-    return b;
-  }, null);
-  map.fitBounds(bounds, { padding: 60, maxZoom: 18 });
+  if (fit) {
+    const bounds = route.geometry.coordinates.reduce((b, c) => {
+      if (!b) return new maplibregl.LngLatBounds(c, c);
+      b.extend(c);
+      return b;
+    }, null);
+    map.fitBounds(bounds, { padding: 60, maxZoom: 18 });
+  }
 
   if (route.maneuvers.length) {
     document.getElementById('nav-banner').classList.remove('hidden');
@@ -538,9 +609,7 @@ function addWaypoint(coords, index = null) {
       waypoints[idx] = [marker.getLngLat().lng, marker.getLngLat().lat];
       updateWaypointList();
       updatePreviewLine();
-      if (document.getElementById('auto-preview').checked) {
-        debouncedRoutePreview();
-      }
+      triggerAutoRoute();
     }
   });
 
@@ -555,7 +624,8 @@ function addWaypoint(coords, index = null) {
   updatePreviewLine();
   showPreviewLine();
 
-  if (document.getElementById('auto-preview').checked && waypoints.length >= 2) {
+  triggerAutoRoute();
+  if (!isPremium && document.getElementById('auto-preview').checked && waypoints.length >= 2) {
     debouncedRoutePreview();
   }
 }
@@ -568,7 +638,15 @@ function removeWaypoint(index) {
   renumberMarkers();
   updateWaypointList();
   updatePreviewLine();
-  if (currentRoute && document.getElementById('auto-preview').checked) {
+  if (waypoints.length < 2) {
+    map.getSource(ROUTE_SOURCE).setData({ type: 'Feature', geometry: { type: 'LineString', coordinates: [] } });
+    document.getElementById('btn-start-ride').classList.add('hidden');
+    document.getElementById('nav-banner').classList.add('hidden');
+    document.getElementById('route-stats').classList.add('hidden');
+    currentRoute = null;
+  }
+  triggerAutoRoute();
+  if (!isPremium && currentRoute && document.getElementById('auto-preview').checked) {
     debouncedRoutePreview();
   }
 }
@@ -578,9 +656,13 @@ function moveWaypointUp(index) {
   [waypoints[index], waypoints[index - 1]] = [waypoints[index - 1], waypoints[index]];
   [waypointMarkers[index], waypointMarkers[index - 1]] = [waypointMarkers[index - 1], waypointMarkers[index]];
   renumberMarkers();
+  flashMarker(waypointMarkers[index - 1]);
+  flashMarker(waypointMarkers[index]);
+  showToast('Waypoint ' + (index + 1) + ' moved up');
   updateWaypointList();
   updatePreviewLine();
-  if (document.getElementById('auto-preview').checked) debouncedRoutePreview();
+  triggerAutoRoute();
+  if (!isPremium && document.getElementById('auto-preview').checked) debouncedRoutePreview();
 }
 
 function moveWaypointDown(index) {
@@ -588,9 +670,13 @@ function moveWaypointDown(index) {
   [waypoints[index], waypoints[index + 1]] = [waypoints[index + 1], waypoints[index]];
   [waypointMarkers[index], waypointMarkers[index + 1]] = [waypointMarkers[index + 1], waypointMarkers[index]];
   renumberMarkers();
+  flashMarker(waypointMarkers[index]);
+  flashMarker(waypointMarkers[index + 1]);
+  showToast('Waypoint ' + (index + 1) + ' moved down');
   updateWaypointList();
   updatePreviewLine();
-  if (document.getElementById('auto-preview').checked) debouncedRoutePreview();
+  triggerAutoRoute();
+  if (!isPremium && document.getElementById('auto-preview').checked) debouncedRoutePreview();
 }
 
 function renumberMarkers() {
@@ -673,7 +759,7 @@ function debouncedRoutePreview() {
   if (previewTimeout) clearTimeout(previewTimeout);
   previewTimeout = setTimeout(() => {
     if (waypoints.length >= 2) {
-      calculateWaypointRoute(true);
+      calculateWaypointRoute(true, true);
     }
   }, 800);
 }
@@ -1174,7 +1260,6 @@ function showElevationModal(distances, elevations, title) {
   const x = d => pad.left + (d / maxDist) * w;
   const y = e => pad.top + h - ((e - minEl) / elRange) * h;
 
-  // Grid lines
   const gridCount = 5;
   for (let i = 0; i <= gridCount; i++) {
     const yPos = pad.top + (i / gridCount) * h;
@@ -1196,7 +1281,6 @@ function showElevationModal(distances, elevations, title) {
     svg.appendChild(text);
   }
 
-  // Distance labels
   const distSteps = 4;
   for (let i = 0; i <= distSteps; i++) {
     const d = (i / distSteps) * maxDist;
@@ -1210,7 +1294,6 @@ function showElevationModal(distances, elevations, title) {
     svg.appendChild(text);
   }
 
-  // Area fill
   let areaPath = `M ${x(0)} ${y(elevations[0])}`;
   for (let i = 1; i < elevations.length; i++) {
     areaPath += ` L ${x(distances[i])} ${y(elevations[i])}`;
@@ -1221,7 +1304,6 @@ function showElevationModal(distances, elevations, title) {
   area.setAttribute('class', 'area');
   svg.appendChild(area);
 
-  // Line
   let linePath = `M ${x(0)} ${y(elevations[0])}`;
   for (let i = 1; i < elevations.length; i++) {
     linePath += ` L ${x(distances[i])} ${y(elevations[i])}`;

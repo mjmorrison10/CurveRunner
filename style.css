@@ -230,6 +230,32 @@ input[type="checkbox"] { width: 22px; height: 22px; accent-color: var(--accent);
   pointer-events: none;
 }
 
+.premium-toggle {
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.premium-toggle.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+@keyframes markerFlash {
+  0% { transform: scale(1); box-shadow: 0 2px 8px rgba(0,0,0,0.5); }
+  50% { transform: scale(1.4); box-shadow: 0 0 20px rgba(255,107,0,0.8); background: #fff; border-color: var(--accent); }
+  100% { transform: scale(1); box-shadow: 0 2px 8px rgba(0,0,0,0.5); }
+}
+.marker-flash {
+  animation: markerFlash 0.4s ease-out;
+}
+
 @media (max-height: 700px) {
   #bottom-panel { max-height: 50vh; }
   .hud-item span { font-size: 1.2rem; }
