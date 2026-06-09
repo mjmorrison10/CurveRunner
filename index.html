@@ -80,6 +80,9 @@
         </div>
       </div>
 
+      <div class="row-btns" style="margin-top:10px">
+        <button id="btn-elevation" class="btn-secondary hidden">📈 Elevation</button>
+      </div>
       <div class="row-btns" style="margin-top:14px">
         <button id="btn-start-ride" class="btn-action hidden">▶ Start Ride</button>
         <button id="btn-stop-ride" class="btn-danger hidden">⏹ Stop Ride</button>
@@ -91,7 +94,10 @@
     <div id="replay-overlay" class="hidden">
       <div id="replay-header">
         <span id="replay-title">Ride Replay</span>
-        <button id="replay-close" class="icon-btn">✕</button>
+        <div style="display:flex;gap:8px">
+          <button id="btn-replay-elevation" class="icon-btn" title="Elevation">📈</button>
+          <button id="replay-close" class="icon-btn">✕</button>
+        </div>
       </div>
       <div id="replay-hud">
         <div class="hud-item"><span id="replay-hud-speed">0</span><small>km/h</small></div>
@@ -122,6 +128,13 @@
     <h2>Ride History</h2>
     <p style="color:var(--text-dim);font-size:0.85rem;margin-bottom:10px">Tap ▶ to replay a ride on the map. Tap GPX to export.</p>
     <ul id="history-list"></ul>
+    <div class="row-btns"><button class="btn-secondary close-modal">Close</button></div>
+  </div>
+
+  <div id="modal-elevation" class="modal hidden">
+    <h2>Elevation Profile</h2>
+    <div id="elevation-chart-container"></div>
+    <div id="elevation-stats" style="display:flex;gap:10px;justify-content:space-between;margin:12px 0;flex-wrap:wrap;font-size:0.85rem;color:var(--text-dim)"></div>
     <div class="row-btns"><button class="btn-secondary close-modal">Close</button></div>
   </div>
 

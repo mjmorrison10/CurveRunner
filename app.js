@@ -1,5 +1,6 @@
 const VALHALLA_URL = 'https://valhalla1.openstreetmap.de/route';
 const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search';
+const ELEVATION_URL = 'https://api.opentopodata.org/v1/srtm90m';
 
 let map;
 let currentMode = 'auto';
@@ -178,6 +179,10 @@ function initUI() {
       debouncedRoutePreview();
     }
   });
+  document.getElementById('btn-elevation').addEventListener('click', () => showElevationModalForRoute());
+  document.getElementById('btn-replay-elevation').addEventListener('click', () => {
+    if (replayState && replayState.ride) showElevationModalForRide(replayState.ride);
+  });
 
   document.getElementById('panel-handle').addEventListener('click', () => {
     document.getElementById('bottom-panel').classList.toggle('collapsed');
@@ -194,7 +199,6 @@ function initUI() {
     document.getElementById('modal-overlay').classList.add('hidden');
   });
 
-  // Replay controls
   document.getElementById('replay-playpause').addEventListener('click', toggleReplay);
   document.getElementById('replay-close').addEventListener('click', stopReplay);
   document.getElementById('replay-slider').addEventListener('input', (e) => {
@@ -312,6 +316,7 @@ async function calculateAutoRoute() {
     currentRoute = route;
     displayRoute(route);
     document.getElementById('btn-start-ride').classList.remove('hidden');
+    document.getElementById('btn-elevation').classList.remove('hidden');
     speak('Route calculated. ' + route.maneuvers.length + ' maneuvers ahead.');
     showToast('Route found! ' + route.length.toFixed(1) + ' km');
   } catch (e) {
@@ -328,6 +333,7 @@ async function calculateWaypointRoute(silent = false) {
     hidePreviewLine();
     updateRouteStats(route.length, route.time, waypoints.length);
     document.getElementById('btn-start-ride').classList.remove('hidden');
+    document.getElementById('btn-elevation').classList.remove('hidden');
     if (!silent) {
       speak('Waypoint route calculated. ' + route.maneuvers.length + ' turns.');
       showToast('Route found! ' + route.length.toFixed(1) + ' km');
@@ -547,6 +553,7 @@ function clearWaypoints() {
   hidePreviewLine();
   map.getSource(ROUTE_SOURCE).setData({ type: 'Feature', geometry: { type: 'LineString', coordinates: [] } });
   document.getElementById('btn-start-ride').classList.add('hidden');
+  document.getElementById('btn-elevation').classList.add('hidden');
   document.getElementById('nav-banner').classList.add('hidden');
   document.getElementById('route-stats').classList.add('hidden');
   currentRoute = null;
@@ -911,6 +918,7 @@ function importGPX(file) {
       currentRoute = route;
       displayRoute(route);
       document.getElementById('btn-start-ride').classList.remove('hidden');
+      document.getElementById('btn-elevation').classList.remove('hidden');
       showToast('GPX imported. ' + route.length.toFixed(1) + ' km');
     } catch (err) {
       showToast('Failed to import GPX');
@@ -981,11 +989,197 @@ function loadSavedRoutes() {
         currentRoute = { geometry: r.geometry, maneuvers: r.maneuvers || [], length: r.length || 0, time: r.time || 0 };
         displayRoute(currentRoute);
         document.getElementById('btn-start-ride').classList.remove('hidden');
+        document.getElementById('btn-elevation').classList.remove('hidden');
         showToast('Offline route loaded');
       });
       list.appendChild(li);
     });
   };
+}
+
+/* ---------- Elevation Profile ---------- */
+
+async function showElevationModalForRoute() {
+  if (!currentRoute) return showToast('No route to analyze');
+  showToast('Fetching elevation data...');
+  try {
+    const coords = currentRoute.geometry.coordinates;
+    const sampled = samplePoints(coords, 100);
+    const elevations = await fetchElevations(sampled);
+    const distances = cumulativeDistances(sampled);
+    showElevationModal(distances, elevations, 'Route Elevation');
+  } catch (e) {
+    showToast('Elevation failed: ' + e.message);
+  }
+}
+
+async function showElevationModalForRide(ride) {
+  if (!ride.points || ride.points.length < 2) return showToast('No ride data');
+  const pts = ride.points;
+  const coords = pts.map(p => [p.lon !== undefined ? p.lon : p[0], p.lat !== undefined ? p.lat : p[1]]);
+  const elevations = pts.map(p => p.alt || p[2] || 0);
+
+  if (elevations.every(e => e === 0)) {
+    showToast('No altitude recorded. Fetching from map...');
+    try {
+      const sampled = samplePoints(coords, 100);
+      const fetchedElevations = await fetchElevations(sampled);
+      const distances = cumulativeDistances(sampled);
+      showElevationModal(distances, fetchedElevations, 'Ride Elevation');
+      return;
+    } catch (e) {
+      showToast('Could not fetch elevation fallback');
+      return;
+    }
+  }
+
+  const distances = cumulativeDistances(coords);
+  showElevationModal(distances, elevations, 'Ride Elevation');
+}
+
+function samplePoints(coords, max) {
+  if (coords.length <= max) return coords;
+  const step = coords.length / max;
+  const sampled = [];
+  for (let i = 0; i < max; i++) {
+    sampled.push(coords[Math.floor(i * step)]);
+  }
+  sampled.push(coords[coords.length - 1]);
+  return sampled;
+}
+
+async function fetchElevations(coords) {
+  const locations = coords.map(c => `${c[1]},${c[0]}`).join('|');
+  const res = await fetch(`${ELEVATION_URL}?locations=${locations}`, { method: 'GET' });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const data = await res.json();
+  if (!data.results || data.results.length === 0) throw new Error('No elevation data');
+  return data.results.map(r => r.elevation);
+}
+
+function cumulativeDistances(coords) {
+  const dists = [0];
+  let total = 0;
+  for (let i = 1; i < coords.length; i++) {
+    total += haversineDistance(coords[i - 1], coords[i]);
+    dists.push(total);
+  }
+  return dists;
+}
+
+function calculateElevationStats(elevations, distances) {
+  let climb = 0, descent = 0, maxEl = -Infinity, minEl = Infinity, maxGrade = 0;
+  for (let i = 0; i < elevations.length - 1; i++) {
+    const diff = elevations[i + 1] - elevations[i];
+    const d = distances[i + 1] - distances[i];
+    if (d > 0) {
+      const grade = (diff / (d * 1000)) * 100;
+      if (Math.abs(grade) > maxGrade) maxGrade = Math.abs(grade);
+    }
+    if (diff > 0) climb += diff;
+    else descent += Math.abs(diff);
+    if (elevations[i] > maxEl) maxEl = elevations[i];
+    if (elevations[i] < minEl) minEl = elevations[i];
+  }
+  if (elevations[elevations.length - 1] > maxEl) maxEl = elevations[elevations.length - 1];
+  if (elevations[elevations.length - 1] < minEl) minEl = elevations[elevations.length - 1];
+  return { climb, descent, maxEl, minEl, maxGrade };
+}
+
+function showElevationModal(distances, elevations, title) {
+  const stats = calculateElevationStats(elevations, distances);
+  const totalDist = distances[distances.length - 1];
+
+  const statsDiv = document.getElementById('elevation-stats');
+  statsDiv.innerHTML = `
+    <span>↑ ${Math.round(stats.climb)}m</span>
+    <span>↓ ${Math.round(stats.descent)}m</span>
+    <span>Max ${Math.round(stats.maxEl)}m</span>
+    <span>Min ${Math.round(stats.minEl)}m</span>
+    <span>Grade ${stats.maxGrade.toFixed(1)}%</span>
+  `;
+
+  const container = document.getElementById('elevation-chart-container');
+  container.innerHTML = '';
+
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 400 160');
+  svg.setAttribute('preserveAspectRatio', 'none');
+
+  const pad = { top: 10, right: 10, bottom: 24, left: 40 };
+  const w = 400 - pad.left - pad.right;
+  const h = 160 - pad.top - pad.bottom;
+
+  const minEl = Math.min(...elevations);
+  const maxEl = Math.max(...elevations);
+  const elRange = Math.max(maxEl - minEl, 1);
+  const maxDist = distances[distances.length - 1];
+
+  const x = d => pad.left + (d / maxDist) * w;
+  const y = e => pad.top + h - ((e - minEl) / elRange) * h;
+
+  // Grid lines
+  const gridCount = 5;
+  for (let i = 0; i <= gridCount; i++) {
+    const yPos = pad.top + (i / gridCount) * h;
+    const elVal = Math.round(maxEl - (i / gridCount) * elRange);
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    line.setAttribute('x1', pad.left);
+    line.setAttribute('y1', yPos);
+    line.setAttribute('x2', pad.left + w);
+    line.setAttribute('y2', yPos);
+    line.setAttribute('class', 'grid');
+    svg.appendChild(line);
+
+    const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    text.setAttribute('x', pad.left - 6);
+    text.setAttribute('y', yPos + 3);
+    text.setAttribute('text-anchor', 'end');
+    text.setAttribute('class', 'axis-text');
+    text.textContent = elVal + 'm';
+    svg.appendChild(text);
+  }
+
+  // Distance labels
+  const distSteps = 4;
+  for (let i = 0; i <= distSteps; i++) {
+    const d = (i / distSteps) * maxDist;
+    const xPos = x(d);
+    const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    text.setAttribute('x', xPos);
+    text.setAttribute('y', 160 - 4);
+    text.setAttribute('text-anchor', 'middle');
+    text.setAttribute('class', 'axis-text');
+    text.textContent = (d).toFixed(1) + 'km';
+    svg.appendChild(text);
+  }
+
+  // Area fill
+  let areaPath = `M ${x(0)} ${y(elevations[0])}`;
+  for (let i = 1; i < elevations.length; i++) {
+    areaPath += ` L ${x(distances[i])} ${y(elevations[i])}`;
+  }
+  areaPath += ` L ${x(maxDist)} ${pad.top + h} L ${x(0)} ${pad.top + h} Z`;
+  const area = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  area.setAttribute('d', areaPath);
+  area.setAttribute('class', 'area');
+  svg.appendChild(area);
+
+  // Line
+  let linePath = `M ${x(0)} ${y(elevations[0])}`;
+  for (let i = 1; i < elevations.length; i++) {
+    linePath += ` L ${x(distances[i])} ${y(elevations[i])}`;
+  }
+  const line = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  line.setAttribute('d', linePath);
+  line.setAttribute('class', 'line');
+  svg.appendChild(line);
+
+  container.appendChild(svg);
+
+  document.getElementById('modal-elevation').querySelector('h2').textContent = title;
+  document.getElementById('modal-overlay').classList.remove('hidden');
+  document.getElementById('modal-elevation').classList.remove('hidden');
 }
 
 /* ---------- Replay System ---------- */
@@ -995,11 +1189,9 @@ function startReplay(ride) {
     return showToast('Not enough data to replay');
   }
 
-  // Close modal
   document.querySelectorAll('.modal').forEach(m => m.classList.add('hidden'));
   document.getElementById('modal-overlay').classList.add('hidden');
 
-  // Hide normal UI
   document.getElementById('top-bar').classList.add('hidden');
   document.getElementById('bottom-panel').classList.add('hidden');
   document.getElementById('nav-banner').classList.add('hidden');
@@ -1007,16 +1199,13 @@ function startReplay(ride) {
   document.getElementById('warning-banner').classList.add('hidden');
   document.getElementById('replay-overlay').classList.remove('hidden');
 
-  // Clear active route from main map
   map.getSource(ROUTE_SOURCE).setData({ type: 'Feature', geometry: { type: 'LineString', coordinates: [] } });
 
-  // Build color-coded segments
   const segments = buildReplaySegments(ride.points);
   if (map.getSource('replay-track')) {
     map.getSource('replay-track').setData({ type: 'FeatureCollection', features: segments });
   }
 
-  // Fit bounds to ride
   const coords = ride.points.map(p => [p.lon !== undefined ? p.lon : p[0], p.lat !== undefined ? p.lat : p[1]]);
   const bounds = coords.reduce((b, c) => {
     if (!b) return new maplibregl.LngLatBounds(c, c);
@@ -1025,7 +1214,6 @@ function startReplay(ride) {
   }, null);
   map.fitBounds(bounds, { padding: 60, maxZoom: 18 });
 
-  // Create moving marker
   const el = document.createElement('div');
   el.className = 'replay-dot';
   const marker = new maplibregl.Marker({ element: el }).setLngLat(coords[0]).addTo(map);
