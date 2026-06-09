@@ -1,6 +1,6 @@
 const VALHALLA_URL = 'https://valhalla1.openstreetmap.de/route';
 const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search';
-const ELEVATION_URL = 'https://api.opentopodata.org/v1/srtm90m';
+const VALHALLA_HEIGHT_URL = 'https://valhalla1.openstreetmap.de/height';
 
 let map;
 let currentMode = 'auto';
@@ -1266,7 +1266,7 @@ async function showElevationModalForRoute() {
   showToast('Fetching elevation data...');
   try {
     const coords = currentRoute.geometry.coordinates;
-    const sampled = samplePoints(coords, 100);
+    const sampled = samplePoints(coords, 80);
     const elevations = await fetchElevations(sampled);
     const distances = cumulativeDistances(sampled);
     showElevationModal(distances, elevations, 'Route Elevation');
@@ -1284,7 +1284,7 @@ async function showElevationModalForRide(ride) {
   if (elevations.every(e => e === 0)) {
     showToast('No altitude recorded. Fetching from map...');
     try {
-      const sampled = samplePoints(coords, 100);
+      const sampled = samplePoints(coords, 80);
       const fetchedElevations = await fetchElevations(sampled);
       const distances = cumulativeDistances(sampled);
       showElevationModal(distances, fetchedElevations, 'Ride Elevation');
@@ -1311,12 +1311,19 @@ function samplePoints(coords, max) {
 }
 
 async function fetchElevations(coords) {
-  const locations = coords.map(c => `${c[1]},${c[0]}`).join('|');
-  const res = await fetch(`${ELEVATION_URL}?locations=${locations}`, { method: 'GET' });
+  const body = {
+    shape: coords.map(c => ({ lat: c[1], lon: c[0] })),
+    range: false
+  };
+  const res = await fetch(VALHALLA_HEIGHT_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
   if (!res.ok) throw new Error('HTTP ' + res.status);
   const data = await res.json();
-  if (!data.results || data.results.length === 0) throw new Error('No elevation data');
-  return data.results.map(r => r.elevation);
+  if (!data.height || !data.height.length) throw new Error('No elevation data');
+  return data.height;
 }
 
 function cumulativeDistances(coords) {
