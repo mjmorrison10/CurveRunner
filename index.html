@@ -55,9 +55,9 @@
       <div id="panel-auto">
         <input type="text" id="search-start" placeholder="Start location (or leave blank for GPS)">
         <input type="text" id="search-end" placeholder="Destination">
-        <div class="slider-row">
-          <label>Curviness <span id="curviness-val">50</span></label>
-          <input type="range" id="curviness" min="0" max="100" value="50">
+        <div id="route-options-auto" class="route-options-container hidden">
+          <p class="hint">Choose your preferred route:</p>
+          <div id="route-options-list-auto" class="route-options-list"></div>
         </div>
         <div class="avoid-options">
           <label class="avoid-label"><input type="checkbox" id="avoid-freeways"> 🛣️ Avoid Freeways</label>
@@ -73,9 +73,9 @@
 
       <div id="panel-waypoints" class="hidden">
         <p class="hint">Tap map to add points. <strong>Drag</strong> markers to move. <strong>Tap</strong> the dashed line to insert. Reorder with arrows.</p>
-        <div class="slider-row">
-          <label>Curviness <span id="wp-curviness-val">50</span></label>
-          <input type="range" id="wp-curviness" min="0" max="100" value="50">
+        <div id="route-options-waypoints" class="route-options-container hidden">
+          <p class="hint">Choose your preferred route:</p>
+          <div id="route-options-list-waypoints" class="route-options-list"></div>
         </div>
         <div class="toggle-row">
           <label>Auto-preview route</label>

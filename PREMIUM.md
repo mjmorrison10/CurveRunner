@@ -35,6 +35,7 @@
 - **Auto-updating route** — drag a marker, add a point, or reorder waypoints and the road route recalculates in real-time (no button presses)
 - **Multi-leg route display** — see the full continuous road route from start through every intermediate waypoint to the destination
 - **Reorder animations** — markers flash and pulse when you move them up/down so you know the change took effect
+- **Intelligent route discovery** — the app automatically tests multiple curviness levels and finds all distinct available routes, then presents them as named options (Straight path, Least curves, Curvy, More curvy, Even more curvy, Maximum curvy, etc.) instead of a confusing slider
 
 ### Ride Analysis
 - **Ride replay** — watch your recorded ride on the map with a speed color-coded route (green = slow, red = fast)

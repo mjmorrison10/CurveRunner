@@ -24,9 +24,6 @@ let db = null;
   let replayState = null;
 let isPremium = localStorage.getItem('curveRunner_premium') !== 'false';
 let autoRouteTimeout = null;
-let curvinessRecalcTimeout = null;
-let routeAlternatives = [];
-let routeLabelMarkers = [];
 
 // Suppress harmless MapLibre tile-abort noise
 window.addEventListener('unhandledrejection', (e) => {
@@ -140,12 +137,13 @@ function initMap() {
   });
 
   map.addControl(new maplibregl.AttributionControl({ compact: true }));
-  map.addControl(new maplibregl.NavigationControl());
-  map.addControl(new maplibregl.GeolocateControl({
+  const geolocateControl = new maplibregl.GeolocateControl({
     positionOptions: { enableHighAccuracy: true },
     trackUserLocation: true,
     showUserLocation: true
-  }));
+  });
+  map.addControl(new maplibregl.NavigationControl());
+  map.addControl(geolocateControl);
 
   map.on('moveend', saveMapView);
   map.on('zoomend', saveMapView);
@@ -198,30 +196,6 @@ function initMap() {
       paint: { 'line-color': '#ff6b00', 'line-width': 5, 'line-opacity': 0.9 }
     });
 
-    // Alternative route sources for multi-route display
-    for (let i = 0; i < 3; i++) {
-      const sid = 'route-alt-' + i;
-      map.addSource(sid, {
-        type: 'geojson',
-        data: { type: 'Feature', geometry: { type: 'LineString', coordinates: [] } }
-      });
-      map.addLayer({
-        id: 'route-layer-alt-' + i,
-        type: 'line',
-        source: sid,
-        layout: { 'line-join': 'round', 'line-cap': 'round' },
-        paint: {
-          'line-color': '#ff6b00',
-          'line-width': i === 1 ? 5 : 4,
-          'line-opacity': i === 1 ? 0.9 : 0.35,
-          'line-dasharray': i === 1 ? [1, 0] : [6, 4]
-        }
-      });
-    }
-
-    map.on('click', 'route-layer-alt-0', () => selectRoute(0));
-    map.on('click', 'route-layer-alt-2', () => selectRoute(2));
-
     map.addSource('replay-track', {
       type: 'geojson',
       data: { type: 'FeatureCollection', features: [] }
@@ -233,6 +207,14 @@ function initMap() {
       layout: { 'line-join': 'round', 'line-cap': 'round' },
       paint: { 'line-color': ['get', 'color'], 'line-width': 4, 'line-opacity': 0.9 }
     });
+
+    setTimeout(() => {
+      try {
+        if (geolocateControl.trigger) geolocateControl.trigger();
+      } catch (e) {
+        console.log('Auto GPS trigger failed', e);
+      }
+    }, 800);
   });
 }
 
@@ -318,29 +300,13 @@ function initUI() {
     });
   });
 
-  const curviness = document.getElementById('curviness');
-  const curvinessVal = document.getElementById('curviness-val');
-  curviness.addEventListener('input', (e) => {
-    curvinessVal.textContent = e.target.value;
-    if (currentRoute && currentMode === 'auto') {
-      if (curvinessRecalcTimeout) clearTimeout(curvinessRecalcTimeout);
-      curvinessRecalcTimeout = setTimeout(() => {
-        calculateAutoRoute();
-      }, 400);
-    }
-  });
-
-  const wpCurviness = document.getElementById('wp-curviness');
-  const wpCurvinessVal = document.getElementById('wp-curviness-val');
-  wpCurviness.addEventListener('input', (e) => {
-    wpCurvinessVal.textContent = e.target.value;
-  });
+  // curviness sliders removed — route discovery is now automatic
 
   // Auto-recalculate when avoidance toggles change (if a route exists)
   ['avoid-freeways', 'avoid-tolls', 'avoid-dirt', 'avoid-ferry'].forEach(id => {
     document.getElementById(id)?.addEventListener('change', () => {
-      if (currentRoute && !routeAlternatives.length) {
-        // Only recalc single routes; if alternatives are showing, let user re-click
+      if (currentRoute) {
+        hideRouteOptions();
         if (currentMode === 'auto' && document.getElementById('search-end').value.trim()) {
           calculateAutoRoute();
         } else if (currentMode === 'waypoints' && waypoints.length >= 2) {
@@ -538,81 +504,167 @@ function generateWaypointCurvyPath(waypoints, curviness) {
   return result;
 }
 
-function clearRouteAlternatives() {
-  routeAlternatives = [];
-  routeLabelMarkers.forEach(m => m.remove());
-  routeLabelMarkers = [];
-  for (let i = 0; i < 3; i++) {
-    const src = map.getSource('route-alt-' + i);
-    if (src) src.setData({ type: 'Feature', geometry: { type: 'LineString', coordinates: [] } });
-  }
+function hideRouteOptions() {
+  document.getElementById('route-options-auto').classList.add('hidden');
+  document.getElementById('route-options-waypoints').classList.add('hidden');
 }
 
-function addRouteLabels(routes, levels) {
-  routeLabelMarkers.forEach(m => m.remove());
-  routeLabelMarkers = [];
-  const labels = ['Less curves', 'Current', 'More curves'];
-  const labelsShort = ['Less', 'Current', 'More'];
+function getRouteSamples(coords, count) {
+  if (coords.length === 0) return [];
+  const samples = [];
+  for (let i = 0; i < count; i++) {
+    const idx = Math.floor((coords.length - 1) * (i / Math.max(count - 1, 1)));
+    samples.push(coords[idx]);
+  }
+  return samples;
+}
 
-  routes.forEach((route, i) => {
-    if (i === 1) return; // skip the default selected route
-    const coords = route.geometry.coordinates;
-    if (!coords.length) return;
-    const mid = coords[Math.floor(coords.length / 2)];
+function isDuplicateRoute(route, existingRoutes) {
+  const newCoords = route.geometry.coordinates;
+  const newSamples = getRouteSamples(newCoords, 5);
+  const newLen = route.length;
 
-    const el = document.createElement('div');
-    el.className = 'route-label';
-    el.textContent = labelsShort[i];
-    el.title = labels[i];
-    el.addEventListener('click', (e) => {
-      e.stopPropagation();
-      selectRoute(i);
+  for (const existing of existingRoutes) {
+    const exCoords = existing.geometry.coordinates;
+    const exSamples = getRouteSamples(exCoords, 5);
+    const exLen = existing.length;
+
+    let allClose = true;
+    for (let i = 0; i < 5; i++) {
+      const d = haversineDistance(newSamples[i], exSamples[i]);
+      if (d > 0.8) {
+        allClose = false;
+        break;
+      }
+    }
+
+    if (allClose && Math.abs(newLen - exLen) / Math.max(newLen, exLen, 1) < 0.2) {
+      return true;
+    }
+  }
+  return false;
+}
+
+const ROUTE_NAME_MAP = {
+  2: [0, 5],
+  3: [0, 2, 5],
+  4: [0, 1, 2, 5],
+  5: [0, 1, 2, 3, 5],
+  6: [0, 1, 2, 3, 4, 5]
+};
+
+function getRouteOptionNames(count) {
+  const names = [
+    'Straight path',
+    'Least curves',
+    'Curvy',
+    'More curvy',
+    'Even more curvy',
+    'Maximum curvy',
+    'Very twisty',
+    'Extremely twisty',
+    'Winding madness',
+    'Maximum intensity'
+  ];
+  if (count <= 1) return ['Route'];
+  if (count <= 6 && ROUTE_NAME_MAP[count]) {
+    return ROUTE_NAME_MAP[count].map(i => names[i]);
+  }
+  const result = [];
+  const step = (names.length - 1) / (count - 1);
+  for (let i = 0; i < count; i++) {
+    result.push(names[Math.round(i * step)]);
+  }
+  return result;
+}
+
+async function discoverRoutes(start, end, waypoints = null) {
+  const costingOptions = buildCostingOptions();
+  const levels = [0, 100, 50, 25, 75, 12, 37, 62, 87, 6, 18, 31, 43, 56, 68, 81, 93];
+  const distinctRoutes = [];
+
+  for (let i = 0; i < levels.length; i += 3) {
+    const batch = levels.slice(i, i + 3);
+    const promises = batch.map(async level => {
+      try {
+        let route;
+        if (waypoints) {
+          const pts = generateWaypointCurvyPath(waypoints, level);
+          route = await fetchRoute(pts, costingOptions);
+        } else {
+          const intermediates = generateCurvyWaypoints(start, end, level);
+          route = await fetchRoute([start, ...intermediates, end], costingOptions);
+        }
+        return route;
+      } catch (e) {
+        return null;
+      }
     });
 
-    const marker = new maplibregl.Marker({ element: el, anchor: 'center' })
-      .setLngLat(mid)
-      .addTo(map);
-    routeLabelMarkers.push(marker);
-  });
+    const results = await Promise.all(promises);
+    for (const route of results) {
+      if (route && !isDuplicateRoute(route, distinctRoutes)) {
+        distinctRoutes.push(route);
+        if (distinctRoutes.length >= 10) break;
+      }
+    }
+    if (distinctRoutes.length >= 10) break;
+  }
+
+  return distinctRoutes;
 }
 
-function showRouteAlternatives(routes, levels) {
-  routeAlternatives = routes;
-  clearRouteAlternatives();
+function showRouteOptions(routes, mode) {
+  const containerId = mode === 'auto' ? 'route-options-auto' : 'route-options-waypoints';
+  const listId = mode === 'auto' ? 'route-options-list-auto' : 'route-options-list-waypoints';
+  const container = document.getElementById(containerId);
+  const list = document.getElementById(listId);
 
-  // Show all three on the map
+  container.classList.remove('hidden');
+  list.innerHTML = '';
+
+  const names = getRouteOptionNames(routes.length);
+
   routes.forEach((route, i) => {
-    const src = map.getSource('route-alt-' + i);
-    if (src) src.setData({ type: 'Feature', geometry: route.geometry });
+    const btn = document.createElement('div');
+    btn.className = 'route-option' + (i === 0 ? ' selected' : '');
+    btn.innerHTML = `
+      <div>
+        <div class="name">${i + 1}. ${names[i]}</div>
+        <div class="meta">${route.length.toFixed(1)} km · ${Math.round(route.time / 60)} min</div>
+      </div>
+      <div style="font-size:1.2rem">→</div>
+    `;
+    btn.addEventListener('click', () => {
+      list.querySelectorAll('.route-option').forEach(el => el.classList.remove('selected'));
+      btn.classList.add('selected');
+      selectRouteOption(route, mode);
+    });
+    list.appendChild(btn);
   });
 
-  // Set the middle one as current by default
-  currentRoute = routes[1];
-  displayRoute(routes[1]);
-
-  addRouteLabels(routes, levels);
-
+  currentRoute = routes[0];
+  displayRoute(currentRoute);
   document.getElementById('btn-start-ride').classList.remove('hidden');
   document.getElementById('btn-elevation').classList.remove('hidden');
 
-  showToast('Tap a faded route or label to select a different curve level');
+  if (mode === 'waypoints') {
+    updateRouteStats(routes[0].length, routes[0].time, waypoints.length);
+    hidePreviewLine();
+  }
+
+  const routeWord = routes.length === 1 ? 'route' : 'routes';
+  showToast(`${routes.length} ${routeWord} found`);
 }
 
-function selectRoute(index) {
-  if (!routeAlternatives[index]) return;
-  currentRoute = routeAlternatives[index];
-  displayRoute(currentRoute);
-
-  clearRouteAlternatives();
-  // Keep the selected one visible
-  const src = map.getSource('route-alt-' + index);
-  if (src) src.setData({ type: 'Feature', geometry: currentRoute.geometry });
-
+function selectRouteOption(route, mode) {
+  currentRoute = route;
+  displayRoute(route);
   document.getElementById('btn-start-ride').classList.remove('hidden');
   document.getElementById('btn-elevation').classList.remove('hidden');
-
-  const names = ['Less curves', 'Current curves', 'More curves'];
-  showToast('Route locked in: ' + names[index]);
+  if (mode === 'waypoints') {
+    updateRouteStats(route.length, route.time, waypoints.length);
+  }
 }
 
 async function calculateAutoRoute() {
@@ -643,26 +695,27 @@ async function calculateAutoRoute() {
     return showToast('Destination error: ' + e.message);
   }
 
-  const baseCurviness = parseInt(document.getElementById('curviness').value);
-  const curvyLevels = [
-    Math.max(0, baseCurviness - 30),
-    baseCurviness,
-    Math.min(100, baseCurviness + 30)
-  ];
-
-  const costingOptions = buildCostingOptions();
-
-  showToast('Calculating 3 route options...');
+  hideRouteOptions();
+  showToast('Analyzing routes...');
 
   try {
-    const routes = await Promise.all(curvyLevels.map(level => {
-      const intermediates = generateCurvyWaypoints(start, end, level);
-      return fetchRoute([start, ...intermediates, end], costingOptions);
-    }));
-
-    showRouteAlternatives(routes, curvyLevels);
-    speak('Three routes found. Pick your favorite curve level.');
-    showToast('Routes found! Tap a faded route or label to select.');
+    const routes = await discoverRoutes(start, end);
+    
+    if (routes.length === 0) {
+      showToast('No routes found');
+      return;
+    }
+    
+    if (routes.length === 1) {
+      currentRoute = routes[0];
+      displayRoute(routes[0]);
+      showToast('1 route found');
+      speak('Route found.');
+      return;
+    }
+    
+    showRouteOptions(routes, 'auto');
+    speak(`${routes.length} routes found. Choose your preference.`);
   } catch (e) {
     showToast('Routing failed: ' + e.message);
   }
@@ -675,39 +728,46 @@ async function calculateWaypointRoute(silent = false, autoUpdate = false) {
     return;
   }
 
-  const curviness = parseInt(document.getElementById('wp-curviness').value) || 0;
   const costingOptions = buildCostingOptions();
 
   try {
-    if (!autoUpdate && !silent) {
-      // Show 3 alternatives on manual click
-      const base = curviness;
-      const levels = [Math.max(0, base - 30), base, Math.min(100, base + 30)];
-      const routes = await Promise.all(levels.map(level => {
-        const pts = generateWaypointCurvyPath(waypoints, level);
-        return fetchRoute(pts, costingOptions);
-      }));
-      showRouteAlternatives(routes, levels);
+    if (autoUpdate) {
+      // Single quick route for premium auto-update
+      const pts = generateWaypointCurvyPath(waypoints, 50);
+      const route = await fetchRoute(pts, costingOptions);
+      currentRoute = route;
+      displayRoute(route, !silent);
       hidePreviewLine();
-      updateRouteStats(routes[1].length, routes[1].time, waypoints.length);
-      speak('Waypoint routes found. Pick your curve level.');
-      showToast('Routes found! Tap a faded route or label to select.');
+      updateRouteStats(route.length, route.time, waypoints.length);
+      document.getElementById('btn-start-ride').classList.remove('hidden');
+      document.getElementById('btn-elevation').classList.remove('hidden');
       return;
     }
 
-    // Single route for auto-update or silent mode
-    const pts = generateWaypointCurvyPath(waypoints, curviness);
-    const route = await fetchRoute(pts, costingOptions);
-    currentRoute = route;
-    displayRoute(route, !autoUpdate);
-    hidePreviewLine();
-    updateRouteStats(route.length, route.time, waypoints.length);
-    document.getElementById('btn-start-ride').classList.remove('hidden');
-    document.getElementById('btn-elevation').classList.remove('hidden');
-    if (!silent) {
-      speak('Waypoint route calculated. ' + route.maneuvers.length + ' turns.');
-      showToast('Route found! ' + route.length.toFixed(1) + ' km');
+    // Full route discovery for manual button
+    hideRouteOptions();
+    showToast('Analyzing routes...');
+    
+    const routes = await discoverRoutes(null, null, waypoints);
+    
+    if (routes.length === 0) {
+      showToast('No routes found');
+      return;
     }
+    
+    if (routes.length === 1) {
+      currentRoute = routes[0];
+      displayRoute(routes[0]);
+      hidePreviewLine();
+      updateRouteStats(routes[0].length, routes[0].time, waypoints.length);
+      document.getElementById('btn-start-ride').classList.remove('hidden');
+      document.getElementById('btn-elevation').classList.remove('hidden');
+      showToast('1 route found');
+      return;
+    }
+    
+    showRouteOptions(routes, 'waypoints');
+    speak(`${routes.length} routes found. Choose your preference.`);
   } catch (e) {
     showToast('Routing failed: ' + e.message);
   }
@@ -985,7 +1045,7 @@ function clearWaypoints() {
   updateWaypointList();
   updatePreviewLine();
   hidePreviewLine();
-  clearRouteAlternatives();
+  hideRouteOptions();
   map.getSource(ROUTE_SOURCE).setData({ type: 'Feature', geometry: { type: 'LineString', coordinates: [] } });
   document.getElementById('btn-start-ride').classList.add('hidden');
   document.getElementById('btn-elevation').classList.add('hidden');
