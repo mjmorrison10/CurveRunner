@@ -1,0 +1,974 @@
+const VALHALLA_URL = 'https://valhalla1.openstreetmap.de/route';
+const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search';
+
+let map;
+let currentMode = 'auto';
+let waypoints = [];
+let waypointMarkers = [];
+const ROUTE_SOURCE = 'route-source';
+const ROUTE_LAYER = 'route-layer';
+let currentRoute = null;
+let isRiding = false;
+let rideData = { points: [], distance: 0, startTime: 0, maxLean: 0, maxSpeed: 0 };
+let geoWatchId = null;
+let leanAngle = 0;
+let nextStepIdx = 0;
+let announceState = {};
+let rideTimerInterval = null;
+let db = null;
+let previewTimeout = null;
+
+document.addEventListener('DOMContentLoaded', async () => {
+  try {
+    await initDB();
+    initMap();
+    initUI();
+    loadHistory();
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('sw.js').catch(console.error);
+    }
+  } catch (e) {
+    console.error('Init failed', e);
+    showToast('App init failed. Reload the page.');
+  }
+});
+
+function initDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open('CurveRunnerDB', 1);
+    req.onupgradeneeded = (e) => {
+      const database = e.target.result;
+      if (!database.objectStoreNames.contains('rides')) {
+        database.createObjectStore('rides', { keyPath: 'id', autoIncrement: true });
+      }
+      if (!database.objectStoreNames.contains('routes')) {
+        database.createObjectStore('routes', { keyPath: 'id', autoIncrement: true });
+      }
+    };
+    req.onsuccess = (e) => { db = e.target.result; resolve(); };
+    req.onerror = (e) => reject(e);
+  });
+}
+
+function initMap() {
+  map = new maplibregl.Map({
+    container: 'map',
+    style: {
+      version: 8,
+      sources: {
+        osm: {
+          type: 'raster',
+          tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+          tileSize: 256,
+          attribution: '&copy; OpenStreetMap contributors'
+        }
+      },
+      layers: [
+        { id: 'osm', type: 'raster', source: 'osm', minzoom: 0, maxzoom: 22 }
+      ]
+    },
+    center: [-122.4194, 37.7749],
+    zoom: 12,
+    maxPitch: 0,
+    attributionControl: false
+  });
+
+  map.addControl(new maplibregl.AttributionControl({ compact: true }));
+  map.addControl(new maplibregl.NavigationControl());
+  map.addControl(new maplibregl.GeolocateControl({
+    positionOptions: { enableHighAccuracy: true },
+    trackUserLocation: true,
+    showUserLocation: true
+  }));
+
+  map.on('click', (e) => {
+    if (currentMode === 'waypoints') {
+      // Check if user tapped near the dashed preview line to insert a waypoint
+      const features = map.queryRenderedFeatures(
+        [[e.point.x - 15, e.point.y - 15], [e.point.x + 15, e.point.y + 15]],
+        { layers: ['preview-layer'] }
+      );
+      if (features.length > 0 && waypoints.length >= 2) {
+        const clickPoint = [e.lngLat.lng, e.lngLat.lat];
+        const segIdx = findClosestSegment(clickPoint);
+        if (segIdx !== -1) {
+          addWaypoint(clickPoint, segIdx + 1);
+          showToast('Waypoint inserted on line');
+          return;
+        }
+      }
+      addWaypoint([e.lngLat.lng, e.lngLat.lat]);
+    }
+  });
+
+  map.on('load', () => {
+    // Dashed preview line connecting waypoints (drawn beneath route)
+    map.addSource('preview-source', {
+      type: 'geojson',
+      data: { type: 'Feature', geometry: { type: 'LineString', coordinates: [] } }
+    });
+    map.addLayer({
+      id: 'preview-layer',
+      type: 'line',
+      source: 'preview-source',
+      layout: { 'line-join': 'round', 'line-cap': 'round', 'visibility': 'none' },
+      paint: { 'line-color': '#ff6b00', 'line-width': 3, 'line-dasharray': [4, 3], 'line-opacity': 0.6 }
+    });
+
+    map.addSource(ROUTE_SOURCE, {
+      type: 'geojson',
+      data: { type: 'Feature', geometry: { type: 'LineString', coordinates: [] } }
+    });
+    map.addLayer({
+      id: ROUTE_LAYER,
+      type: 'line',
+      source: ROUTE_SOURCE,
+      layout: { 'line-join': 'round', 'line-cap': 'round' },
+      paint: { 'line-color': '#ff6b00', 'line-width': 5, 'line-opacity': 0.9 }
+    });
+  });
+}
+
+function initUI() {
+  document.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      currentMode = tab.dataset.mode;
+      document.getElementById('panel-auto').classList.toggle('hidden', currentMode !== 'auto');
+      document.getElementById('panel-waypoints').classList.toggle('hidden', currentMode !== 'waypoints');
+      if (currentMode === 'waypoints') {
+        showPreviewLine();
+      } else {
+        hidePreviewLine();
+      }
+    });
+  });
+
+  const curviness = document.getElementById('curviness');
+  const curvinessVal = document.getElementById('curviness-val');
+  curviness.addEventListener('input', (e) => {
+    curvinessVal.textContent = e.target.value;
+  });
+
+  document.getElementById('btn-gps-start').addEventListener('click', useCurrentLocationAsStart);
+  document.getElementById('btn-route-auto').addEventListener('click', calculateAutoRoute);
+  document.getElementById('btn-route-wp').addEventListener('click', () => calculateWaypointRoute(false));
+  document.getElementById('btn-clear-wp').addEventListener('click', clearWaypoints);
+  document.getElementById('btn-start-ride').addEventListener('click', startRide);
+  document.getElementById('btn-stop-ride').addEventListener('click', stopRide);
+  document.getElementById('btn-history').addEventListener('click', showHistoryModal);
+  document.getElementById('btn-settings').addEventListener('click', showSettingsModal);
+  document.getElementById('btn-offline').addEventListener('click', saveCurrentRouteOffline);
+  document.getElementById('btn-export-route').addEventListener('click', exportRouteGPX);
+  document.getElementById('gpx-import').addEventListener('change', (e) => importGPX(e.target.files[0]));
+  document.getElementById('auto-preview').addEventListener('change', () => {
+    if (document.getElementById('auto-preview').checked && waypoints.length >= 2) {
+      debouncedRoutePreview();
+    }
+  });
+
+  document.getElementById('panel-handle').addEventListener('click', () => {
+    document.getElementById('bottom-panel').classList.toggle('collapsed');
+  });
+
+  document.querySelectorAll('.close-modal').forEach(b => {
+    b.addEventListener('click', () => {
+      document.querySelectorAll('.modal').forEach(m => m.classList.add('hidden'));
+      document.getElementById('modal-overlay').classList.add('hidden');
+    });
+  });
+  document.getElementById('modal-overlay').addEventListener('click', () => {
+    document.querySelectorAll('.modal').forEach(m => m.classList.add('hidden'));
+    document.getElementById('modal-overlay').classList.add('hidden');
+  });
+
+  if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+    const btn = document.createElement('button');
+    btn.textContent = 'Enable Motion Sensors';
+    btn.className = 'btn-primary';
+    btn.style.cssText = 'position:absolute;top:110px;left:12px;z-index:30;padding:8px 12px;font-size:0.85rem;';
+    btn.addEventListener('click', async () => {
+      try {
+        const res = await DeviceOrientationEvent.requestPermission();
+        if (res === 'granted') {
+          window.addEventListener('deviceorientation', handleOrientation);
+          window.addEventListener('devicemotion', handleMotion);
+          showToast('Sensors enabled');
+          btn.remove();
+        } else {
+          showToast('Motion permission denied');
+        }
+      } catch (e) {
+        showToast('Error enabling motion');
+      }
+    });
+    document.body.appendChild(btn);
+  } else {
+    window.addEventListener('deviceorientation', handleOrientation);
+    window.addEventListener('devicemotion', handleMotion);
+  }
+}
+
+/* ---------- Geolocation & Geocoding ---------- */
+
+async function geocode(query) {
+  const url = `${NOMINATIM_URL}?format=json&q=${encodeURIComponent(query)}&limit=1`;
+  const res = await fetch(url, { headers: { 'Accept-Language': 'en' } });
+  const data = await res.json();
+  if (data && data.length) {
+    return [parseFloat(data[0].lon), parseFloat(data[0].lat)];
+  }
+  throw new Error('Location not found');
+}
+
+function getCurrentPosition() {
+  return new Promise((resolve, reject) => {
+    navigator.geolocation.getCurrentPosition(
+      pos => resolve([pos.coords.longitude, pos.coords.latitude]),
+      err => reject(err),
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  });
+}
+
+async function useCurrentLocationAsStart() {
+  try {
+    const pos = await getCurrentPosition();
+    const input = document.getElementById('search-start');
+    input.value = 'My Location';
+    input.dataset.lon = pos[0];
+    input.dataset.lat = pos[1];
+    map.setCenter(pos);
+    map.setZoom(15);
+  } catch (e) {
+    showToast('Could not get GPS: ' + e.message);
+  }
+}
+
+/* ---------- Routing ---------- */
+
+async function calculateAutoRoute() {
+  const startInput = document.getElementById('search-start');
+  const endInput = document.getElementById('search-end');
+  const startQuery = startInput.value.trim();
+  const endQuery = endInput.value.trim();
+
+  if (!endQuery) return showToast('Enter a destination');
+
+  let start;
+  try {
+    if (startQuery.toLowerCase() === 'my location' && startInput.dataset.lon) {
+      start = [parseFloat(startInput.dataset.lon), parseFloat(startInput.dataset.lat)];
+    } else if (startQuery) {
+      start = await geocode(startQuery);
+    } else {
+      start = await getCurrentPosition();
+    }
+  } catch (e) {
+    return showToast('Start location error: ' + e.message);
+  }
+
+  let end;
+  try {
+    end = await geocode(endQuery);
+  } catch (e) {
+    return showToast('Destination error: ' + e.message);
+  }
+
+  const curviness = parseInt(document.getElementById('curviness').value);
+  const intermediates = generateCurvyWaypoints(start, end, curviness);
+  const locations = [start, ...intermediates, end];
+
+  try {
+    const route = await fetchRoute(locations);
+    currentRoute = route;
+    displayRoute(route);
+    document.getElementById('btn-start-ride').classList.remove('hidden');
+    speak('Route calculated. ' + route.maneuvers.length + ' maneuvers ahead.');
+    showToast('Route found! ' + route.length.toFixed(1) + ' km');
+  } catch (e) {
+    showToast('Routing failed: ' + e.message);
+  }
+}
+
+async function calculateWaypointRoute(silent = false) {
+  if (waypoints.length < 2) return showToast('Add at least 2 waypoints');
+  try {
+    const route = await fetchRoute(waypoints);
+    currentRoute = route;
+    displayRoute(route);
+    hidePreviewLine();
+    updateRouteStats(route.length, route.time, waypoints.length);
+    document.getElementById('btn-start-ride').classList.remove('hidden');
+    if (!silent) {
+      speak('Waypoint route calculated. ' + route.maneuvers.length + ' turns.');
+      showToast('Route found! ' + route.length.toFixed(1) + ' km');
+    }
+  } catch (e) {
+    showToast('Routing failed: ' + e.message);
+  }
+}
+
+function generateCurvyWaypoints(start, end, curviness) {
+  if (curviness <= 0) return [];
+  const count = Math.max(1, Math.floor(curviness / 15));
+  const maxOffsetDeg = (curviness / 100) * 0.08;
+  const pts = [];
+  const angle = Math.atan2(end[1] - start[1], end[0] - start[0]);
+
+  for (let i = 1; i <= count; i++) {
+    const t = i / (count + 1);
+    const lat = start[1] + (end[1] - start[1]) * t;
+    const lng = start[0] + (end[0] - start[0]) * t;
+    const perp = angle + (Math.PI / 2) * (Math.random() > 0.5 ? 1 : -1);
+    const offset = maxOffsetDeg * (0.5 + Math.random() * 0.5);
+    pts.push([lng + Math.cos(perp) * offset, lat + Math.sin(perp) * offset]);
+  }
+  return pts;
+}
+
+async function fetchRoute(locations) {
+  const body = {
+    locations: locations.map(loc => ({ lon: loc[0], lat: loc[1] })),
+    costing: 'motorcycle',
+    costing_options: {
+      motorcycle: {
+        use_highways: 0.0,
+        use_tolls: 0.0
+      }
+    },
+    directions_options: {
+      units: 'kilometers',
+      language: 'en'
+    }
+  };
+
+  const res = await fetch(VALHALLA_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const data = await res.json();
+  if (data.error) throw new Error(data.error);
+  if (!data.trip || !data.trip.legs || !data.trip.legs.length) throw new Error('No route found');
+
+  const leg = data.trip.legs[0];
+  let coords = decodePolyline(leg.shape, 6);
+  if (coords.length < 2) coords = decodePolyline(leg.shape, 5);
+
+  return {
+    geometry: { type: 'LineString', coordinates: coords },
+    maneuvers: leg.maneuvers || [],
+    length: data.trip.summary ? data.trip.summary.length : 0,
+    time: data.trip.summary ? data.trip.summary.time : 0
+  };
+}
+
+function decodePolyline(str, precision = 6) {
+  let index = 0, lat = 0, lng = 0, coordinates = [];
+  const factor = Math.pow(10, precision);
+  while (index < str.length) {
+    let b, shift = 0, result = 0;
+    do {
+      b = str.charCodeAt(index++) - 63;
+      result |= (b & 0x1f) << shift;
+      shift += 5;
+    } while (b >= 0x20);
+    const dlat = ((result & 1) ? ~(result >> 1) : (result >> 1));
+    lat += dlat;
+
+    shift = 0; result = 0;
+    do {
+      b = str.charCodeAt(index++) - 63;
+      result |= (b & 0x1f) << shift;
+      shift += 5;
+    } while (b >= 0x20);
+    const dlng = ((result & 1) ? ~(result >> 1) : (result >> 1));
+    lng += dlng;
+
+    coordinates.push([lng / factor, lat / factor]);
+  }
+  return coordinates;
+}
+
+function displayRoute(route) {
+  map.getSource(ROUTE_SOURCE).setData({
+    type: 'Feature',
+    geometry: route.geometry
+  });
+
+  const bounds = route.geometry.coordinates.reduce((b, c) => {
+    if (!b) return new maplibregl.LngLatBounds(c, c);
+    b.extend(c);
+    return b;
+  }, null);
+  map.fitBounds(bounds, { padding: 60, maxZoom: 18 });
+
+  if (route.maneuvers.length) {
+    document.getElementById('nav-banner').classList.remove('hidden');
+    document.getElementById('nav-instruction').textContent = route.maneuvers[0].instruction;
+    document.getElementById('nav-distance').textContent = route.maneuvers[0].length ? route.maneuvers[0].length.toFixed(1) + ' km' : '';
+  } else {
+    document.getElementById('nav-banner').classList.add('hidden');
+  }
+}
+
+/* ---------- Waypoints & Preview Line ---------- */
+
+function addWaypoint(coords, index = null) {
+  const insertIndex = index !== null ? index : waypoints.length;
+  if (index !== null) {
+    waypoints.splice(insertIndex, 0, coords);
+  } else {
+    waypoints.push(coords);
+  }
+
+  const el = document.createElement('div');
+  el.className = 'waypoint-marker';
+  el.textContent = insertIndex + 1;
+  const marker = new maplibregl.Marker({ element: el, draggable: true })
+    .setLngLat(coords)
+    .addTo(map);
+
+  marker._waypointIndex = insertIndex;
+
+  marker.on('drag', () => {
+    const idx = marker._waypointIndex;
+    if (idx >= 0 && idx < waypoints.length) {
+      waypoints[idx] = [marker.getLngLat().lng, marker.getLngLat().lat];
+      updatePreviewLine();
+    }
+  });
+
+  marker.on('dragend', () => {
+    const idx = marker._waypointIndex;
+    if (idx >= 0 && idx < waypoints.length) {
+      waypoints[idx] = [marker.getLngLat().lng, marker.getLngLat().lat];
+      updateWaypointList();
+      updatePreviewLine();
+      if (document.getElementById('auto-preview').checked) {
+        debouncedRoutePreview();
+      }
+    }
+  });
+
+  if (index !== null) {
+    waypointMarkers.splice(insertIndex, 0, marker);
+  } else {
+    waypointMarkers.push(marker);
+  }
+
+  renumberMarkers();
+  updateWaypointList();
+  updatePreviewLine();
+  showPreviewLine();
+
+  if (document.getElementById('auto-preview').checked && waypoints.length >= 2) {
+    debouncedRoutePreview();
+  }
+}
+
+function removeWaypoint(index) {
+  if (index < 0 || index >= waypoints.length) return;
+  waypoints.splice(index, 1);
+  waypointMarkers[index].remove();
+  waypointMarkers.splice(index, 1);
+  renumberMarkers();
+  updateWaypointList();
+  updatePreviewLine();
+  if (currentRoute && document.getElementById('auto-preview').checked) {
+    debouncedRoutePreview();
+  }
+}
+
+function moveWaypointUp(index) {
+  if (index <= 0) return;
+  [waypoints[index], waypoints[index - 1]] = [waypoints[index - 1], waypoints[index]];
+  [waypointMarkers[index], waypointMarkers[index - 1]] = [waypointMarkers[index - 1], waypointMarkers[index]];
+  renumberMarkers();
+  updateWaypointList();
+  updatePreviewLine();
+  if (document.getElementById('auto-preview').checked) debouncedRoutePreview();
+}
+
+function moveWaypointDown(index) {
+  if (index >= waypoints.length - 1) return;
+  [waypoints[index], waypoints[index + 1]] = [waypoints[index + 1], waypoints[index]];
+  [waypointMarkers[index], waypointMarkers[index + 1]] = [waypointMarkers[index + 1], waypointMarkers[index]];
+  renumberMarkers();
+  updateWaypointList();
+  updatePreviewLine();
+  if (document.getElementById('auto-preview').checked) debouncedRoutePreview();
+}
+
+function renumberMarkers() {
+  waypointMarkers.forEach((m, i) => {
+    m._waypointIndex = i;
+    m.getElement().textContent = i + 1;
+  });
+}
+
+function clearWaypoints() {
+  waypoints = [];
+  waypointMarkers.forEach(m => m.remove());
+  waypointMarkers = [];
+  updateWaypointList();
+  updatePreviewLine();
+  hidePreviewLine();
+  map.getSource(ROUTE_SOURCE).setData({ type: 'Feature', geometry: { type: 'LineString', coordinates: [] } });
+  document.getElementById('btn-start-ride').classList.add('hidden');
+  document.getElementById('nav-banner').classList.add('hidden');
+  document.getElementById('route-stats').classList.add('hidden');
+  currentRoute = null;
+}
+
+function updatePreviewLine() {
+  if (!map.getSource('preview-source')) return;
+  map.getSource('preview-source').setData({
+    type: 'Feature',
+    geometry: { type: 'LineString', coordinates: waypoints }
+  });
+}
+
+function showPreviewLine() {
+  if (map.getLayer('preview-layer')) {
+    map.setLayoutProperty('preview-layer', 'visibility', 'visible');
+  }
+}
+
+function hidePreviewLine() {
+  if (map.getLayer('preview-layer')) {
+    map.setLayoutProperty('preview-layer', 'visibility', 'none');
+  }
+}
+
+function findClosestSegment(point) {
+  let minDist = Infinity;
+  let bestIdx = -1;
+  for (let i = 0; i < waypoints.length - 1; i++) {
+    const d = pointToSegmentDistance(point, waypoints[i], waypoints[i + 1]);
+    if (d < minDist) {
+      minDist = d;
+      bestIdx = i;
+    }
+  }
+  return minDist < 1.0 ? bestIdx : -1;
+}
+
+function pointToSegmentDistance(p, a, b) {
+  const R = 6371;
+  const toRad = d => d * Math.PI / 180;
+  const px = toRad(p[0]), py = toRad(p[1]);
+  const ax = toRad(a[0]), ay = toRad(a[1]);
+  const bx = toRad(b[0]), by = toRad(b[1]);
+  const scale = Math.cos((ay + by) / 2);
+  const dx = (bx - ax) * scale;
+  const dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  if (len2 === 0) return haversineDistance(p, a);
+  const dpx = (px - ax) * scale;
+  const dpy = py - ay;
+  let t = (dpx * dx + dpy * dy) / len2;
+  t = Math.max(0, Math.min(1, t));
+  const projx = ax + t * dx;
+  const projy = ay + t * dy;
+  const projDeg = [projx * 180 / Math.PI, projy * 180 / Math.PI];
+  return haversineDistance(p, projDeg);
+}
+
+function debouncedRoutePreview() {
+  if (previewTimeout) clearTimeout(previewTimeout);
+  previewTimeout = setTimeout(() => {
+    if (waypoints.length >= 2) {
+      calculateWaypointRoute(true);
+    }
+  }, 800);
+}
+
+function updateWaypointList() {
+  const list = document.getElementById('waypoint-list');
+  list.innerHTML = '';
+  waypoints.forEach((wp, i) => {
+    const li = document.createElement('li');
+    li.className = 'waypoint-item';
+
+    let distStr = '';
+    if (i > 0) {
+      const d = haversineDistance(waypoints[i - 1], wp);
+      distStr = `<div class="meta">+${d.toFixed(1)} km from previous</div>`;
+    }
+
+    li.innerHTML = `
+      <div style="display:flex;align-items:center;flex:1;min-width:0">
+        <span class="idx">${i + 1}</span>
+        <div class="name">
+          <span>Point ${i + 1}</span>
+          ${distStr}
+        </div>
+      </div>
+      <div class="reorder">
+        <button ${i === 0 ? 'disabled' : ''} data-dir="up" title="Move up">↑</button>
+        <button ${i === waypoints.length - 1 ? 'disabled' : ''} data-dir="down" title="Move down">↓</button>
+      </div>
+      <button class="delete" title="Remove">×</button>
+    `;
+
+    li.querySelector('[data-dir="up"]')?.addEventListener('click', () => moveWaypointUp(i));
+    li.querySelector('[data-dir="down"]')?.addEventListener('click', () => moveWaypointDown(i));
+    li.querySelector('.delete')?.addEventListener('click', () => removeWaypoint(i));
+
+    list.appendChild(li);
+  });
+}
+
+function updateRouteStats(lengthKm, timeSec, numPoints) {
+  const stats = document.getElementById('route-stats');
+  stats.classList.remove('hidden');
+  const min = Math.round(timeSec / 60);
+  document.getElementById('stat-dist').textContent = lengthKm.toFixed(1) + ' km';
+  document.getElementById('stat-time').textContent = min + ' min';
+  document.getElementById('stat-points').textContent = numPoints + ' pts';
+}
+
+/* ---------- Voice Navigation ---------- */
+
+function speak(text) {
+  if (!('speechSynthesis' in window)) return;
+  window.speechSynthesis.cancel();
+  const utter = new SpeechSynthesisUtterance(text);
+  utter.rate = 1.0;
+  utter.pitch = 1.0;
+  utter.volume = 1.0;
+  const voices = window.speechSynthesis.getVoices();
+  const en = voices.find(v => v.lang && v.lang.startsWith('en')) || voices[0];
+  if (en) utter.voice = en;
+  window.speechSynthesis.speak(utter);
+}
+
+if ('speechSynthesis' in window) {
+  window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices();
+}
+
+/* ---------- Ride Recording ---------- */
+
+function startRide() {
+  if (!currentRoute) return;
+  isRiding = true;
+  rideData = { points: [], distance: 0, startTime: Date.now(), maxLean: 0, maxSpeed: 0 };
+  nextStepIdx = 0;
+  announceState = {};
+
+  document.getElementById('btn-start-ride').classList.add('hidden');
+  document.getElementById('btn-stop-ride').classList.remove('hidden');
+  document.getElementById('ride-hud').classList.remove('hidden');
+  document.getElementById('warning-banner').classList.remove('hidden');
+  document.getElementById('bottom-panel').classList.add('collapsed');
+
+  geoWatchId = navigator.geolocation.watchPosition(
+    handleRidePosition,
+    (err) => console.error('GPS error', err),
+    { enableHighAccuracy: true, maximumAge: 0, timeout: 5000 }
+  );
+
+  startTimer();
+  speak('Ride started. Navigate safely.');
+}
+
+function stopRide() {
+  isRiding = false;
+  if (geoWatchId !== null) navigator.geolocation.clearWatch(geoWatchId);
+  clearInterval(rideTimerInterval);
+
+  const duration = Math.floor((Date.now() - rideData.startTime) / 1000);
+  const ride = {
+    id: Date.now(),
+    date: new Date().toISOString(),
+    distance: rideData.distance,
+    duration: duration,
+    maxSpeed: rideData.maxSpeed,
+    maxLean: rideData.maxLean,
+    points: rideData.points
+  };
+
+  saveRide(ride);
+  speak('Ride complete. Distance ' + rideData.distance.toFixed(1) + ' kilometers.');
+
+  document.getElementById('btn-start-ride').classList.remove('hidden');
+  document.getElementById('btn-stop-ride').classList.add('hidden');
+  document.getElementById('ride-hud').classList.add('hidden');
+  document.getElementById('warning-banner').classList.add('hidden');
+  document.getElementById('bottom-panel').classList.remove('collapsed');
+  document.getElementById('nav-banner').classList.add('hidden');
+
+  nextStepIdx = 0;
+  announceState = {};
+}
+
+function handleRidePosition(position) {
+  const coords = [position.coords.longitude, position.coords.latitude];
+  const alt = position.coords.altitude || 0;
+  const speed = position.coords.speed || 0;
+  const speedKmh = speed * 3.6;
+
+  rideData.points.push([coords[0], coords[1], alt]);
+
+  if (rideData.points.length > 1) {
+    const prev = rideData.points[rideData.points.length - 2];
+    const d = haversineDistance([prev[0], prev[1]], coords);
+    rideData.distance += d;
+  }
+
+  if (speedKmh > rideData.maxSpeed) rideData.maxSpeed = speedKmh;
+  if (Math.abs(leanAngle) > rideData.maxLean) rideData.maxLean = Math.abs(leanAngle);
+
+  document.getElementById('hud-speed').textContent = Math.round(speedKmh);
+  document.getElementById('hud-dist').textContent = rideData.distance.toFixed(1);
+  document.getElementById('hud-lean').textContent = Math.round(leanAngle) + '°';
+
+  updateNav(position);
+}
+
+function updateNav(position) {
+  if (!currentRoute || !currentRoute.maneuvers.length) return;
+  const maneuvers = currentRoute.maneuvers;
+  if (nextStepIdx >= maneuvers.length) {
+    document.getElementById('nav-instruction').textContent = 'You have arrived';
+    document.getElementById('nav-distance').textContent = '';
+    return;
+  }
+
+  const man = maneuvers[nextStepIdx];
+  const idx = man.begin_shape_index;
+  if (idx === undefined || idx >= currentRoute.geometry.coordinates.length) return;
+
+  const manCoord = currentRoute.geometry.coordinates[idx];
+  const dist = haversineDistance([position.coords.longitude, position.coords.latitude], manCoord);
+  document.getElementById('nav-distance').textContent = (dist * 1000).toFixed(0) + ' m';
+
+  if (!announceState[nextStepIdx]) announceState[nextStepIdx] = {};
+  const state = announceState[nextStepIdx];
+
+  if (!state.at200 && dist < 0.2 && dist > 0.08) {
+    state.at200 = true;
+    speak('In ' + Math.round(dist * 1000) + ' meters, ' + man.instruction);
+  }
+  if (!state.at50 && dist < 0.05) {
+    state.at50 = true;
+    speak(man.instruction);
+    nextStepIdx++;
+    const nextMan = maneuvers[nextStepIdx];
+    document.getElementById('nav-instruction').textContent = nextMan ? nextMan.instruction : 'You have arrived';
+  }
+}
+
+function startTimer() {
+  rideTimerInterval = setInterval(() => {
+    const elapsed = Math.floor((Date.now() - rideData.startTime) / 1000);
+    const m = Math.floor(elapsed / 60).toString().padStart(2, '0');
+    const s = (elapsed % 60).toString().padStart(2, '0');
+    document.getElementById('hud-time').textContent = m + ':' + s;
+  }, 1000);
+}
+
+function haversineDistance(a, b) {
+  const R = 6371;
+  const dLat = (b[1] - a[1]) * Math.PI / 180;
+  const dLon = (b[0] - a[0]) * Math.PI / 180;
+  const lat1 = a[1] * Math.PI / 180;
+  const lat2 = b[1] * Math.PI / 180;
+  const a1 = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.sin(dLon / 2) * Math.sin(dLon / 2) * Math.cos(lat1) * Math.cos(lat2);
+  const c = 2 * Math.atan2(Math.sqrt(a1), Math.sqrt(1 - a1));
+  return R * c;
+}
+
+/* ---------- Sensors ---------- */
+
+function handleOrientation(e) {
+  if (e.gamma !== null) {
+    leanAngle = e.gamma;
+  }
+}
+
+function handleMotion(e) {
+  const acc = e.accelerationIncludingGravity;
+  if (acc && acc.x !== null && acc.z !== null) {
+    const angle = Math.atan2(acc.x, acc.z) * (180 / Math.PI);
+    leanAngle = angle;
+  }
+}
+
+/* ---------- GPX ---------- */
+
+function toGPX(name, points) {
+  const trkpts = points.map(p => `    <trkpt lat="${p[1]}" lon="${p[0]}">${p[2] !== undefined ? `<ele>${p[2]}</ele>` : ''}</trkpt>`).join('\n');
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" xmlns="http://www.topografix.com/GPX/1/1">\n  <trk><name>${escapeXml(name)}</name><trkseg>\n${trkpts}\n  </trkseg></trk>\n</gpx>`;
+}
+
+function escapeXml(str) {
+  return str.replace(/[<>&'"]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' }[c]));
+}
+
+function downloadFile(content, filename, mime) {
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function exportRouteGPX() {
+  if (!currentRoute) return showToast('No route to export');
+  const pts = currentRoute.geometry.coordinates.map(c => [c[0], c[1], 0]);
+  downloadFile(toGPX('CurveRunner Route', pts), 'route-' + Date.now() + '.gpx', 'application/gpx+xml');
+  showToast('Route exported as GPX');
+}
+
+function exportRideGPX(id) {
+  const tx = db.transaction('rides', 'readonly');
+  const store = tx.objectStore('rides');
+  const req = store.get(id);
+  req.onsuccess = (e) => {
+    const ride = e.target.result;
+    if (!ride) return;
+    downloadFile(toGPX('Ride ' + new Date(ride.date).toLocaleDateString(), ride.points), 'ride-' + id + '.gpx', 'application/gpx+xml');
+    showToast('Ride exported');
+  };
+}
+
+function importGPX(file) {
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const text = e.target.result;
+      const parser = new DOMParser();
+      const xml = parser.parseFromString(text, 'text/xml');
+      const trkpts = xml.querySelectorAll('trkpt');
+      const points = [];
+      trkpts.forEach(pt => {
+        const lat = parseFloat(pt.getAttribute('lat'));
+        const lon = parseFloat(pt.getAttribute('lon'));
+        if (!isNaN(lat) && !isNaN(lon)) points.push([lon, lat]);
+      });
+      if (points.length < 2) {
+        showToast('GPX has no valid track points');
+        return;
+      }
+      const route = {
+        geometry: { type: 'LineString', coordinates: points },
+        maneuvers: [],
+        length: 0,
+        time: 0
+      };
+      for (let i = 1; i < points.length; i++) route.length += haversineDistance(points[i - 1], points[i]);
+      currentRoute = route;
+      displayRoute(route);
+      document.getElementById('btn-start-ride').classList.remove('hidden');
+      showToast('GPX imported. ' + route.length.toFixed(1) + ' km');
+    } catch (err) {
+      showToast('Failed to import GPX');
+    }
+  };
+  reader.readAsText(file);
+}
+
+/* ---------- Database & History ---------- */
+
+function saveRide(ride) {
+  const tx = db.transaction('rides', 'readwrite');
+  tx.objectStore('rides').add(ride);
+  tx.oncomplete = () => loadHistory();
+}
+
+function loadHistory() {
+  const tx = db.transaction('rides', 'readonly');
+  const store = tx.objectStore('rides');
+  const req = store.getAll();
+  req.onsuccess = (e) => {
+    const rides = e.target.result.reverse();
+    const list = document.getElementById('history-list');
+    list.innerHTML = '';
+    rides.forEach(r => {
+      const li = document.createElement('li');
+      const date = new Date(r.date).toLocaleDateString();
+      const durMin = Math.floor(r.duration / 60);
+      const durSec = (r.duration % 60).toString().padStart(2, '0');
+      li.innerHTML = `<div class="info"><div class="date">${date}</div><div class="stats">${r.distance.toFixed(1)} km · ${durMin}:${durSec} · max ${Math.round(r.maxSpeed)} km/h · lean ${Math.round(r.maxLean)}°</div></div><button class="btn-small btn-secondary">GPX</button>`;
+      li.querySelector('button').addEventListener('click', () => exportRideGPX(r.id));
+      list.appendChild(li);
+    });
+  };
+}
+
+function saveCurrentRouteOffline() {
+  if (!currentRoute) return showToast('No route to save');
+  const tx = db.transaction('routes', 'readwrite');
+  tx.objectStore('routes').add({
+    name: 'Route ' + new Date().toLocaleTimeString(),
+    geometry: currentRoute.geometry,
+    maneuvers: currentRoute.maneuvers,
+    length: currentRoute.length,
+    time: currentRoute.time,
+    created: new Date().toISOString()
+  });
+  tx.oncomplete = () => showToast('Route saved offline');
+}
+
+function loadSavedRoutes() {
+  const tx = db.transaction('routes', 'readonly');
+  const store = tx.objectStore('routes');
+  const req = store.getAll();
+  req.onsuccess = (e) => {
+    const routes = e.target.result.reverse();
+    const list = document.getElementById('saved-routes-list');
+    list.innerHTML = '';
+    if (!routes.length) {
+      list.innerHTML = '<li style="color:var(--text-dim);font-size:0.85rem">No saved routes yet.</li>';
+      return;
+    }
+    routes.forEach(r => {
+      const li = document.createElement('li');
+      li.innerHTML = `<span style="font-size:0.85rem">${r.name}</span><button class="btn-small btn-secondary">Load</button>`;
+      li.querySelector('button').addEventListener('click', () => {
+        currentRoute = { geometry: r.geometry, maneuvers: r.maneuvers || [], length: r.length || 0, time: r.time || 0 };
+        displayRoute(currentRoute);
+        document.getElementById('btn-start-ride').classList.remove('hidden');
+        showToast('Offline route loaded');
+      });
+      list.appendChild(li);
+    });
+  };
+}
+
+/* ---------- Modals & Toasts ---------- */
+
+function showHistoryModal() {
+  document.getElementById('modal-overlay').classList.remove('hidden');
+  document.getElementById('modal-history').classList.remove('hidden');
+}
+
+function showSettingsModal() {
+  loadSavedRoutes();
+  document.getElementById('modal-overlay').classList.remove('hidden');
+  document.getElementById('modal-settings').classList.remove('hidden');
+}
+
+function showToast(msg) {
+  const container = document.getElementById('toast-container');
+  const toast = document.createElement('div');
+  toast.className = 'toast';
+  toast.textContent = msg;
+  container.appendChild(toast);
+  setTimeout(() => {
+    toast.style.opacity = '0';
+    toast.style.transition = 'opacity 0.5s';
+    setTimeout(() => toast.remove(), 500);
+  }, 3000);
+}

@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#1a1a1a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="CurveRunner">
+  <title>CurveRunner - Motorcycle Nav</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icon.png">
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" />
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <div id="map"></div>
+
+    <div id="top-bar">
+      <div class="logo">🏍️ CurveRunner</div>
+      <div class="actions">
+        <button id="btn-offline" class="icon-btn" title="Save Offline">📴</button>
+        <button id="btn-history" class="icon-btn" title="Ride History">📜</button>
+        <button id="btn-settings" class="icon-btn" title="Settings">⚙️</button>
+      </div>
+    </div>
+
+    <div id="warning-banner" class="hidden">
+      ⚠️ Keep screen on for live navigation. Mount phone to handlebars for best lean-angle accuracy.
+    </div>
+
+    <div id="nav-banner" class="hidden">
+      <div id="nav-instruction">Navigate safely</div>
+      <div id="nav-distance">--</div>
+    </div>
+
+    <div id="ride-hud" class="hidden">
+      <div class="hud-item"><span id="hud-speed">0</span><small>km/h</small></div>
+      <div class="hud-item"><span id="hud-lean">0°</span><small>Lean</small></div>
+      <div class="hud-item"><span id="hud-dist">0.0</span><small>km</small></div>
+      <div class="hud-item"><span id="hud-time">00:00</span><small>Time</small></div>
+    </div>
+
+    <div id="bottom-panel">
+      <div id="panel-handle"></div>
+      <div id="mode-tabs">
+        <button class="tab active" data-mode="auto">Auto Route</button>
+        <button class="tab" data-mode="waypoints">Waypoints</button>
+      </div>
+
+      <div id="panel-auto">
+        <input type="text" id="search-start" placeholder="Start location (or leave blank for GPS)">
+        <input type="text" id="search-end" placeholder="Destination">
+        <div class="slider-row">
+          <label>Curviness <span id="curviness-val">50</span></label>
+          <input type="range" id="curviness" min="0" max="100" value="50">
+        </div>
+        <div class="row-btns">
+          <button id="btn-route-auto" class="btn-primary">Find Curvy Route</button>
+          <button id="btn-gps-start" class="btn-secondary">📍 Use My GPS</button>
+        </div>
+      </div>
+
+      <div id="panel-waypoints" class="hidden">
+        <p class="hint">Tap map to add points. <strong>Drag</strong> markers to move. <strong>Tap</strong> the dashed line to insert. Reorder with arrows.</p>
+        <div class="toggle-row">
+          <label>Auto-preview route</label>
+          <input type="checkbox" id="auto-preview">
+        </div>
+        <div id="route-stats" class="hidden">
+          <span id="stat-dist">0 km</span>
+          <span id="stat-time">0 min</span>
+          <span id="stat-points">0 pts</span>
+        </div>
+        <ul id="waypoint-list"></ul>
+        <div class="row-btns">
+          <button id="btn-route-wp" class="btn-primary">Route Through Points</button>
+          <button id="btn-clear-wp" class="btn-secondary">Clear</button>
+        </div>
+      </div>
+
+      <div class="row-btns" style="margin-top:14px">
+        <button id="btn-start-ride" class="btn-action hidden">▶ Start Ride</button>
+        <button id="btn-stop-ride" class="btn-danger hidden">⏹ Stop Ride</button>
+      </div>
+    </div>
+
+    <div id="toast-container"></div>
+  </div>
+
+  <div id="modal-overlay" class="hidden"></div>
+
+  <div id="modal-history" class="modal hidden">
+    <h2>Ride History</h2>
+    <p style="color:var(--text-dim);font-size:0.85rem;margin-bottom:10px">Tap a ride to export GPX.</p>
+    <ul id="history-list"></ul>
+    <div class="row-btns"><button class="btn-secondary close-modal">Close</button></div>
+  </div>
+
+  <div id="modal-settings" class="modal hidden">
+    <h2>Settings & Tools</h2>
+    <div class="row-btns" style="margin-bottom:10px">
+      <button id="btn-export-route" class="btn-primary">Export Route (GPX)</button>
+    </div>
+    <div style="margin-bottom:14px">
+      <p style="margin-bottom:6px;font-size:0.85rem;color:var(--text-dim)">Import GPX Route</p>
+      <input type="file" id="gpx-import" accept=".gpx" style="font-size:0.85rem;color:var(--text)">
+    </div>
+    <div style="margin-bottom:14px">
+      <p style="margin-bottom:6px;font-size:0.85rem;color:var(--text-dim)">Saved Offline Routes</p>
+      <ul id="saved-routes-list"></ul>
+    </div>
+    <div class="row-btns"><button class="btn-secondary close-modal">Close</button></div>
+  </div>
+
+  <script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
