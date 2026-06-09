@@ -17,6 +17,7 @@ let announceState = {};
 let rideTimerInterval = null;
 let db = null;
 let previewTimeout = null;
+let replayState = null;
 
 document.addEventListener('DOMContentLoaded', async () => {
   try {
@@ -83,7 +84,6 @@ function initMap() {
 
   map.on('click', (e) => {
     if (currentMode === 'waypoints') {
-      // Check if user tapped near the dashed preview line to insert a waypoint
       const features = map.queryRenderedFeatures(
         [[e.point.x - 15, e.point.y - 15], [e.point.x + 15, e.point.y + 15]],
         { layers: ['preview-layer'] }
@@ -102,7 +102,6 @@ function initMap() {
   });
 
   map.on('load', () => {
-    // Dashed preview line connecting waypoints (drawn beneath route)
     map.addSource('preview-source', {
       type: 'geojson',
       data: { type: 'Feature', geometry: { type: 'LineString', coordinates: [] } }
@@ -125,6 +124,18 @@ function initMap() {
       source: ROUTE_SOURCE,
       layout: { 'line-join': 'round', 'line-cap': 'round' },
       paint: { 'line-color': '#ff6b00', 'line-width': 5, 'line-opacity': 0.9 }
+    });
+
+    map.addSource('replay-track', {
+      type: 'geojson',
+      data: { type: 'FeatureCollection', features: [] }
+    });
+    map.addLayer({
+      id: 'replay-track',
+      type: 'line',
+      source: 'replay-track',
+      layout: { 'line-join': 'round', 'line-cap': 'round' },
+      paint: { 'line-color': ['get', 'color'], 'line-width': 4, 'line-opacity': 0.9 }
     });
   });
 }
@@ -181,6 +192,22 @@ function initUI() {
   document.getElementById('modal-overlay').addEventListener('click', () => {
     document.querySelectorAll('.modal').forEach(m => m.classList.add('hidden'));
     document.getElementById('modal-overlay').classList.add('hidden');
+  });
+
+  // Replay controls
+  document.getElementById('replay-playpause').addEventListener('click', toggleReplay);
+  document.getElementById('replay-close').addEventListener('click', stopReplay);
+  document.getElementById('replay-slider').addEventListener('input', (e) => {
+    if (!replayState) return;
+    pauseReplay();
+    seekReplay(parseFloat(e.target.value));
+  });
+  document.querySelectorAll('#replay-speed .speed-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('#replay-speed .speed-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      if (replayState) replayState.speedMultiplier = parseFloat(btn.dataset.speed);
+    });
   });
 
   if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
@@ -713,11 +740,19 @@ function handleRidePosition(position) {
   const speed = position.coords.speed || 0;
   const speedKmh = speed * 3.6;
 
-  rideData.points.push([coords[0], coords[1], alt]);
+  const point = {
+    lon: coords[0],
+    lat: coords[1],
+    alt: alt,
+    speed: speedKmh,
+    time: Date.now(),
+    lean: leanAngle
+  };
+  rideData.points.push(point);
 
   if (rideData.points.length > 1) {
     const prev = rideData.points[rideData.points.length - 2];
-    const d = haversineDistance([prev[0], prev[1]], coords);
+    const d = haversineDistance([prev.lon, prev.lat], coords);
     rideData.distance += d;
   }
 
@@ -803,7 +838,12 @@ function handleMotion(e) {
 /* ---------- GPX ---------- */
 
 function toGPX(name, points) {
-  const trkpts = points.map(p => `    <trkpt lat="${p[1]}" lon="${p[0]}">${p[2] !== undefined ? `<ele>${p[2]}</ele>` : ''}</trkpt>`).join('\n');
+  const trkpts = points.map(p => {
+    const lon = p.lon !== undefined ? p.lon : p[0];
+    const lat = p.lat !== undefined ? p.lat : p[1];
+    const alt = p.alt !== undefined ? p.alt : (p[2] || 0);
+    return `    <trkpt lat="${lat}" lon="${lon}">${alt ? `<ele>${alt}</ele>` : ''}</trkpt>`;
+  }).join('\n');
   return `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" xmlns="http://www.topografix.com/GPX/1/1">\n  <trk><name>${escapeXml(name)}</name><trkseg>\n${trkpts}\n  </trkseg></trk>\n</gpx>`;
 }
 
@@ -900,8 +940,9 @@ function loadHistory() {
       const date = new Date(r.date).toLocaleDateString();
       const durMin = Math.floor(r.duration / 60);
       const durSec = (r.duration % 60).toString().padStart(2, '0');
-      li.innerHTML = `<div class="info"><div class="date">${date}</div><div class="stats">${r.distance.toFixed(1)} km · ${durMin}:${durSec} · max ${Math.round(r.maxSpeed)} km/h · lean ${Math.round(r.maxLean)}°</div></div><button class="btn-small btn-secondary">GPX</button>`;
-      li.querySelector('button').addEventListener('click', () => exportRideGPX(r.id));
+      li.innerHTML = `<div class="info"><div class="date">${date}</div><div class="stats">${r.distance.toFixed(1)} km · ${durMin}:${durSec} · max ${Math.round(r.maxSpeed)} km/h · lean ${Math.round(r.maxLean)}°</div></div><div class="ride-actions"><button class="btn-small btn-secondary export-btn">GPX</button><button class="btn-small btn-primary replay-btn">▶</button></div>`;
+      li.querySelector('.export-btn').addEventListener('click', () => exportRideGPX(r.id));
+      li.querySelector('.replay-btn').addEventListener('click', () => startReplay(r));
       list.appendChild(li);
     });
   };
@@ -945,6 +986,242 @@ function loadSavedRoutes() {
       list.appendChild(li);
     });
   };
+}
+
+/* ---------- Replay System ---------- */
+
+function startReplay(ride) {
+  if (!ride.points || ride.points.length < 2) {
+    return showToast('Not enough data to replay');
+  }
+
+  // Close modal
+  document.querySelectorAll('.modal').forEach(m => m.classList.add('hidden'));
+  document.getElementById('modal-overlay').classList.add('hidden');
+
+  // Hide normal UI
+  document.getElementById('top-bar').classList.add('hidden');
+  document.getElementById('bottom-panel').classList.add('hidden');
+  document.getElementById('nav-banner').classList.add('hidden');
+  document.getElementById('ride-hud').classList.add('hidden');
+  document.getElementById('warning-banner').classList.add('hidden');
+  document.getElementById('replay-overlay').classList.remove('hidden');
+
+  // Clear active route from main map
+  map.getSource(ROUTE_SOURCE).setData({ type: 'Feature', geometry: { type: 'LineString', coordinates: [] } });
+
+  // Build color-coded segments
+  const segments = buildReplaySegments(ride.points);
+  if (map.getSource('replay-track')) {
+    map.getSource('replay-track').setData({ type: 'FeatureCollection', features: segments });
+  }
+
+  // Fit bounds to ride
+  const coords = ride.points.map(p => [p.lon !== undefined ? p.lon : p[0], p.lat !== undefined ? p.lat : p[1]]);
+  const bounds = coords.reduce((b, c) => {
+    if (!b) return new maplibregl.LngLatBounds(c, c);
+    b.extend(c);
+    return b;
+  }, null);
+  map.fitBounds(bounds, { padding: 60, maxZoom: 18 });
+
+  // Create moving marker
+  const el = document.createElement('div');
+  el.className = 'replay-dot';
+  const marker = new maplibregl.Marker({ element: el }).setLngLat(coords[0]).addTo(map);
+
+  const times = ride.points.map(p => p.time || 0);
+  const totalDuration = Math.max(times[times.length - 1] - times[0], 1);
+
+  replayState = {
+    ride,
+    isPlaying: false,
+    virtualTime: 0,
+    speedMultiplier: 2,
+    points: ride.points,
+    totalDuration,
+    marker,
+    lastFrameTime: 0,
+    animationId: null
+  };
+
+  document.getElementById('replay-title').textContent = 'Ride Replay – ' + new Date(ride.date).toLocaleDateString();
+  updateReplayUI(0);
+  playReplay();
+}
+
+function buildReplaySegments(points) {
+  const speeds = points.map(p => p.speed || 0);
+  const maxSpeed = Math.max(...speeds, 1);
+  const features = [];
+  for (let i = 0; i < points.length - 1; i++) {
+    const p1 = points[i];
+    const p2 = points[i + 1];
+    const avgSpeed = ((p1.speed || 0) + (p2.speed || 0)) / 2;
+    const color = speedToColor(avgSpeed, maxSpeed);
+    features.push({
+      type: 'Feature',
+      properties: { color, speed: avgSpeed },
+      geometry: {
+        type: 'LineString',
+        coordinates: [
+          [p1.lon !== undefined ? p1.lon : p1[0], p1.lat !== undefined ? p1.lat : p1[1]],
+          [p2.lon !== undefined ? p2.lon : p2[0], p2.lat !== undefined ? p2.lat : p2[1]]
+        ]
+      }
+    });
+  }
+  return features;
+}
+
+function speedToColor(speed, maxSpeed) {
+  const t = Math.min(speed / maxSpeed, 1);
+  if (t < 0.5) {
+    const r = Math.round(255 * (t * 2));
+    return `rgb(${r}, 255, 0)`;
+  } else {
+    const g = Math.round(255 * (1 - (t - 0.5) * 2));
+    return `rgb(255, ${g}, 0)`;
+  }
+}
+
+function toggleReplay() {
+  if (!replayState) return;
+  if (replayState.isPlaying) {
+    pauseReplay();
+  } else {
+    playReplay();
+  }
+}
+
+function playReplay() {
+  if (!replayState) return;
+  if (replayState.virtualTime >= replayState.totalDuration) {
+    replayState.virtualTime = 0;
+  }
+  replayState.isPlaying = true;
+  replayState.lastFrameTime = performance.now();
+  document.getElementById('replay-playpause').textContent = '⏸';
+  replayState.animationId = requestAnimationFrame(replayLoop);
+}
+
+function pauseReplay() {
+  if (!replayState) return;
+  replayState.isPlaying = false;
+  if (replayState.animationId) cancelAnimationFrame(replayState.animationId);
+  document.getElementById('replay-playpause').textContent = '▶';
+}
+
+function replayLoop(now) {
+  if (!replayState || !replayState.isPlaying) return;
+  const dt = now - replayState.lastFrameTime;
+  replayState.lastFrameTime = now;
+  replayState.virtualTime += dt * replayState.speedMultiplier;
+
+  if (replayState.virtualTime >= replayState.totalDuration) {
+    replayState.virtualTime = replayState.totalDuration;
+    updateReplayPosition(replayState.virtualTime);
+    pauseReplay();
+    return;
+  }
+
+  updateReplayPosition(replayState.virtualTime);
+  replayState.animationId = requestAnimationFrame(replayLoop);
+}
+
+function updateReplayPosition(virtualTime) {
+  if (!replayState) return;
+  const pts = replayState.points;
+  const startTime = pts[0].time || 0;
+  const targetTime = startTime + virtualTime;
+
+  let idx = 0;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const t1 = pts[i].time || 0;
+    const t2 = pts[i + 1].time || 0;
+    if (t1 <= targetTime && t2 >= targetTime) {
+      idx = i;
+      break;
+    }
+  }
+  if (idx >= pts.length - 1) idx = pts.length - 2;
+
+  const p1 = pts[idx];
+  const p2 = pts[idx + 1];
+  const t1 = p1.time || 0;
+  const t2 = p2.time || 0;
+  const segDuration = t2 - t1;
+  const t = segDuration > 0 ? (targetTime - t1) / segDuration : 0;
+
+  const lon1 = p1.lon !== undefined ? p1.lon : p1[0];
+  const lat1 = p1.lat !== undefined ? p1.lat : p1[1];
+  const lon2 = p2.lon !== undefined ? p2.lon : p2[0];
+  const lat2 = p2.lat !== undefined ? p2.lat : p2[1];
+
+  const lon = lon1 + (lon2 - lon1) * t;
+  const lat = lat1 + (lat2 - lat1) * t;
+  const speed = (p1.speed || 0) + ((p2.speed || 0) - (p1.speed || 0)) * t;
+  const lean = (p1.lean || 0) + ((p2.lean || 0) - (p1.lean || 0)) * t;
+
+  let dist = 0;
+  for (let i = 0; i < idx; i++) {
+    const a = pts[i];
+    const b = pts[i + 1];
+    const aLon = a.lon !== undefined ? a.lon : a[0];
+    const aLat = a.lat !== undefined ? a.lat : a[1];
+    const bLon = b.lon !== undefined ? b.lon : b[0];
+    const bLat = b.lat !== undefined ? b.lat : b[1];
+    dist += haversineDistance([aLon, aLat], [bLon, bLat]);
+  }
+  dist += haversineDistance([lon1, lat1], [lon, lat]);
+
+  replayState.marker.setLngLat([lon, lat]);
+
+  document.getElementById('replay-hud-speed').textContent = Math.round(speed);
+  document.getElementById('replay-hud-lean').textContent = Math.round(lean) + '°';
+  document.getElementById('replay-hud-dist').textContent = dist.toFixed(1);
+
+  const pct = (virtualTime / replayState.totalDuration) * 100;
+  document.getElementById('replay-slider').value = pct;
+
+  document.getElementById('replay-current').textContent = formatTime(virtualTime / 1000);
+}
+
+function seekReplay(pct) {
+  if (!replayState) return;
+  replayState.virtualTime = (pct / 100) * replayState.totalDuration;
+  updateReplayPosition(replayState.virtualTime);
+}
+
+function updateReplayUI(virtualTime) {
+  if (!replayState) return;
+  const pct = (virtualTime / replayState.totalDuration) * 100;
+  document.getElementById('replay-slider').value = pct;
+  document.getElementById('replay-current').textContent = formatTime(virtualTime / 1000);
+  document.getElementById('replay-total').textContent = formatTime(replayState.totalDuration / 1000);
+  document.getElementById('replay-hud-speed').textContent = '0';
+  document.getElementById('replay-hud-lean').textContent = '0°';
+  document.getElementById('replay-hud-dist').textContent = '0.0';
+}
+
+function formatTime(seconds) {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60).toString().padStart(2, '0');
+  return m + ':' + s;
+}
+
+function stopReplay() {
+  if (replayState) {
+    pauseReplay();
+    replayState.marker.remove();
+    replayState = null;
+  }
+  if (map.getSource('replay-track')) {
+    map.getSource('replay-track').setData({ type: 'FeatureCollection', features: [] });
+  }
+  document.getElementById('replay-overlay').classList.add('hidden');
+  document.getElementById('top-bar').classList.remove('hidden');
+  document.getElementById('bottom-panel').classList.remove('hidden');
 }
 
 /* ---------- Modals & Toasts ---------- */

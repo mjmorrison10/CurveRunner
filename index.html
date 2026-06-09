@@ -87,13 +87,40 @@
     </div>
 
     <div id="toast-container"></div>
+
+    <div id="replay-overlay" class="hidden">
+      <div id="replay-header">
+        <span id="replay-title">Ride Replay</span>
+        <button id="replay-close" class="icon-btn">✕</button>
+      </div>
+      <div id="replay-hud">
+        <div class="hud-item"><span id="replay-hud-speed">0</span><small>km/h</small></div>
+        <div class="hud-item"><span id="replay-hud-lean">0°</span><small>Lean</small></div>
+        <div class="hud-item"><span id="replay-hud-dist">0.0</span><small>km</small></div>
+      </div>
+      <div id="replay-controls">
+        <button id="replay-playpause" class="btn-action">▶</button>
+        <div id="replay-scrubber">
+          <input type="range" id="replay-slider" min="0" max="100" value="0" step="0.1">
+          <div id="replay-time-display">
+            <span id="replay-current">0:00</span>
+            <span id="replay-total">0:00</span>
+          </div>
+        </div>
+        <div id="replay-speed">
+          <button class="btn-small speed-btn" data-speed="1">1x</button>
+          <button class="btn-small speed-btn active" data-speed="2">2x</button>
+          <button class="btn-small speed-btn" data-speed="4">4x</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <div id="modal-overlay" class="hidden"></div>
 
   <div id="modal-history" class="modal hidden">
     <h2>Ride History</h2>
-    <p style="color:var(--text-dim);font-size:0.85rem;margin-bottom:10px">Tap a ride to export GPX.</p>
+    <p style="color:var(--text-dim);font-size:0.85rem;margin-bottom:10px">Tap ▶ to replay a ride on the map. Tap GPX to export.</p>
     <ul id="history-list"></ul>
     <div class="row-btns"><button class="btn-secondary close-modal">Close</button></div>
   </div>
