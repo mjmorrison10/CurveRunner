@@ -312,9 +312,7 @@ function initUI() {
     if (replayState && replayState.ride) showElevationModalForRide(replayState.ride);
   });
 
-  document.getElementById('panel-handle').addEventListener('click', () => {
-    document.getElementById('bottom-panel').classList.toggle('collapsed');
-  });
+  initPanelDrag();
 
   document.querySelectorAll('.close-modal').forEach(b => {
     b.addEventListener('click', () => {
@@ -478,6 +476,10 @@ async function calculateAutoRoute() {
 
 async function calculateWaypointRoute(silent = false, autoUpdate = false) {
   if (waypoints.length < 2) return showToast('Add at least 2 waypoints');
+  if (!isPremium && waypoints.length > 3) {
+    if (!silent) showToast('Free tier: max 3 waypoints. Upgrade to Premium for unlimited.');
+    return;
+  }
   try {
     const route = await fetchRoute(waypoints);
     currentRoute = route;
@@ -1623,6 +1625,80 @@ function stopReplay() {
   document.getElementById('replay-overlay').classList.add('hidden');
   document.getElementById('top-bar').classList.remove('hidden');
   document.getElementById('bottom-panel').classList.remove('hidden');
+}
+
+/* ---------- Panel Drag ---------- */
+
+function initPanelDrag() {
+  const handle = document.getElementById('panel-handle');
+  const panel = document.getElementById('bottom-panel');
+  let isDragging = false;
+  let startY, startHeight, moved = false;
+
+  function getClientY(e) {
+    return e.touches ? e.touches[0].clientY : e.clientY;
+  }
+
+  function startDrag(e) {
+    isDragging = true;
+    moved = false;
+    startY = getClientY(e);
+    const rect = panel.getBoundingClientRect();
+    startHeight = rect.height;
+
+    panel.classList.remove('collapsed');
+    panel.style.transition = 'none';
+    panel.style.transform = 'none';
+    panel.style.maxHeight = 'none';
+    panel.style.height = startHeight + 'px';
+    handle.style.cursor = 'grabbing';
+  }
+
+  function onDrag(e) {
+    if (!isDragging) return;
+    if (e.cancelable) e.preventDefault();
+    const y = getClientY(e);
+    const delta = Math.abs(y - startY);
+    if (delta > 5) moved = true;
+    const deltaY = startY - y;
+    const newHeight = Math.min(Math.max(startHeight + deltaY, 56), window.innerHeight * 0.85);
+    panel.style.height = newHeight + 'px';
+  }
+
+  function endDrag() {
+    if (!isDragging) return;
+    isDragging = false;
+    handle.style.cursor = 'grab';
+
+    const currentHeight = parseFloat(panel.style.height);
+    panel.style.transition = '';
+
+    if (!moved) {
+      panel.classList.toggle('collapsed');
+      panel.style.height = '';
+      panel.style.maxHeight = '';
+      panel.style.transform = '';
+      return;
+    }
+
+    if (currentHeight < 120) {
+      panel.classList.add('collapsed');
+    } else {
+      panel.classList.remove('collapsed');
+    }
+    panel.style.height = '';
+    panel.style.maxHeight = '';
+    panel.style.transform = '';
+  }
+
+  handle.addEventListener('mousedown', startDrag);
+  handle.addEventListener('touchstart', startDrag, { passive: true });
+
+  window.addEventListener('mousemove', onDrag);
+  window.addEventListener('touchmove', onDrag, { passive: false });
+
+  window.addEventListener('mouseup', endDrag);
+  window.addEventListener('touchend', endDrag);
 }
 
 /* ---------- Modals & Toasts ---------- */
