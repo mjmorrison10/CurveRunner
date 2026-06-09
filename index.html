@@ -59,6 +59,12 @@
           <label>Curviness <span id="curviness-val">50</span></label>
           <input type="range" id="curviness" min="0" max="100" value="50">
         </div>
+        <div class="avoid-options">
+          <label class="avoid-label"><input type="checkbox" id="avoid-freeways"> 🛣️ Avoid Freeways</label>
+          <label class="avoid-label"><input type="checkbox" id="avoid-tolls"> 💰 Avoid Tolls</label>
+          <label class="avoid-label"><input type="checkbox" id="avoid-dirt"> 🌲 Avoid Dirt/Trails</label>
+          <label class="avoid-label"><input type="checkbox" id="avoid-ferry"> ⛴️ Avoid Ferries</label>
+        </div>
         <div class="row-btns">
           <button id="btn-route-auto" class="btn-primary">Find Curvy Route</button>
           <button id="btn-gps-start" class="btn-secondary">📍 Use My GPS</button>
@@ -67,6 +73,10 @@
 
       <div id="panel-waypoints" class="hidden">
         <p class="hint">Tap map to add points. <strong>Drag</strong> markers to move. <strong>Tap</strong> the dashed line to insert. Reorder with arrows.</p>
+        <div class="slider-row">
+          <label>Curviness <span id="wp-curviness-val">50</span></label>
+          <input type="range" id="wp-curviness" min="0" max="100" value="50">
+        </div>
         <div class="toggle-row">
           <label>Auto-preview route</label>
           <input type="checkbox" id="auto-preview">

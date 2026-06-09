@@ -167,6 +167,43 @@ input[type="checkbox"] { width: 22px; height: 22px; accent-color: var(--accent);
 #elevation-chart-container .hover-line { stroke: #fff; stroke-width: 1; stroke-dasharray: 3 3; opacity: 0; }
 #elevation-chart-container .hover-circle { fill: #fff; stroke: #ff6b00; stroke-width: 2; opacity: 0; }
 
+.avoid-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.avoid-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.avoid-label input[type="checkbox"] {
+  width: 18px; height: 18px; accent-color: var(--accent);
+}
+
+.route-label {
+  background: var(--accent);
+  color: #fff;
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+  pointer-events: auto;
+  transition: all 0.2s;
+}
+.route-label:hover {
+  background: #fff;
+  color: var(--accent);
+  transform: scale(1.05);
+}
+
 .maplibregl-ctrl-attrib { font-size: 10px; color: #888; }
 .maplibregl-ctrl-attrib a { color: #aaa; }
 
