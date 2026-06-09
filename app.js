@@ -20,10 +20,18 @@ let nextStepIdx = 0;
 let announceState = {};
 let rideTimerInterval = null;
 let db = null;
-let previewTimeout = null;
-let replayState = null;
-let isPremium = localStorage.getItem('curveRunner_premium') !== 'false';
-let autoRouteTimeout = null;
+  let previewTimeout = null;
+  let replayState = null;
+  let isPremium = localStorage.getItem('curveRunner_premium') !== 'false';
+  let autoRouteTimeout = null;
+  let curvinessRecalcTimeout = null;
+
+// Suppress harmless MapLibre tile-abort noise
+window.addEventListener('unhandledrejection', (e) => {
+  if (e.reason && e.reason.name === 'AbortError' && e.reason.message && e.reason.message.includes('aborted')) {
+    e.preventDefault();
+  }
+});
 
 document.addEventListener('DOMContentLoaded', async () => {
   try {
@@ -288,6 +296,12 @@ function initUI() {
   const curvinessVal = document.getElementById('curviness-val');
   curviness.addEventListener('input', (e) => {
     curvinessVal.textContent = e.target.value;
+    if (currentRoute && currentMode === 'auto') {
+      if (curvinessRecalcTimeout) clearTimeout(curvinessRecalcTimeout);
+      curvinessRecalcTimeout = setTimeout(() => {
+        calculateAutoRoute();
+      }, 400);
+    }
   });
 
   document.getElementById('btn-gps-start').addEventListener('click', useCurrentLocationAsStart);
@@ -403,14 +417,43 @@ async function geocode(query) {
   throw new Error('Location not found');
 }
 
-function getCurrentPosition() {
+function getCurrentPosition(preferCached = false) {
   return new Promise((resolve, reject) => {
+    const options = {
+      enableHighAccuracy: !preferCached,
+      maximumAge: preferCached ? 60000 : 0,
+      timeout: 15000
+    };
     navigator.geolocation.getCurrentPosition(
       pos => resolve([pos.coords.longitude, pos.coords.latitude]),
-      err => reject(err),
-      { enableHighAccuracy: true, timeout: 10000 }
+      err => {
+        if (!preferCached) {
+          // Retry with cached/low-accuracy position
+          navigator.geolocation.getCurrentPosition(
+            pos2 => resolve([pos2.coords.longitude, pos2.coords.latitude]),
+            err2 => reject(err2),
+            { enableHighAccuracy: false, maximumAge: 60000, timeout: 15000 }
+          );
+        } else {
+          reject(err);
+        }
+      },
+      options
     );
   });
+}
+
+function geolocationErrorMessage(err) {
+  switch (err.code) {
+    case err.PERMISSION_DENIED:
+      return 'GPS permission denied. Check browser/site settings.';
+    case err.POSITION_UNAVAILABLE:
+      return 'GPS unavailable. Try the map’s GPS button first, or enter a location manually.';
+    case err.TIMEOUT:
+      return 'GPS timed out. Try again or enter a location manually.';
+    default:
+      return 'GPS error: ' + (err.message || 'unknown');
+  }
 }
 
 async function useCurrentLocationAsStart() {
@@ -423,7 +466,7 @@ async function useCurrentLocationAsStart() {
     map.setCenter(pos);
     map.setZoom(15);
   } catch (e) {
-    showToast('Could not get GPS: ' + e.message);
+    showToast(geolocationErrorMessage(e));
   }
 }
 
