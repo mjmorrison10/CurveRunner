@@ -35,6 +35,7 @@
 - **Two navigation view modes** (like Google Maps):
   - **📍 Follow mode** — map smoothly centers on your live GPS position, rotates to your heading, and zooms in so you can see upcoming turns
   - **🗺️ Overview mode** — map zooms out to show the entire route at a glance; tap 📍 to snap back to follow mode
+- **🧭 Compass toggle** — tap the compass button to alternate between **North-up** (map always points north) and **Heading-up** (map rotates to face the direction your phone is pointed). Uses GPS heading when moving, device compass when stationary
 - **Dynamic turn re-snap** — if you skip a turn or take a detour, the app recalculates which maneuver you're closest to every GPS tick and resumes guidance from the next upcoming turn
 - **Cancel navigation** — a "Cancel Navigation" button appears during any ride so you can abort turn-by-turn guidance and return to planning without saving a ride record
 

@@ -31,6 +31,8 @@ let lastGroupPostTime = 0;
 let groupEventSource = null;
 let friendMarkers = {};
 let replayMode = 'speed';
+let mapBearingMode = 'north'; // 'north' or 'heading'
+let deviceOrientationHeading = 0;
 
 // Suppress harmless MapLibre tile-abort noise
 window.addEventListener('unhandledrejection', (e) => {
@@ -378,6 +380,7 @@ function initUI() {
   document.getElementById('btn-copy-group-link').addEventListener('click', copyGroupLink);
   document.getElementById('btn-stop-group').addEventListener('click', stopGroupRideSharing);
   document.getElementById('btn-photo').addEventListener('click', dropPhotoWaypoint);
+  document.getElementById('btn-compass').addEventListener('click', toggleMapBearingMode);
   document.getElementById('photo-capture').addEventListener('change', handlePhotoCapture);
   document.getElementById('btn-replay-lean').addEventListener('click', toggleReplayLeanMode);
   document.getElementById('btn-replay-curves').addEventListener('click', () => {
@@ -1492,8 +1495,17 @@ function handleRidePosition(position) {
   // Follow rider in nav mode
   if (navFollowMode) {
     const centerOptions = { center: coords, duration: 500, easing: t => t };
-    if (position.coords.heading !== null && !isNaN(position.coords.heading)) {
-      centerOptions.bearing = position.coords.heading;
+    if (mapBearingMode === 'heading') {
+      // Use GPS heading when moving, fallback to device compass
+      let bearing = position.coords.heading;
+      if (bearing === null || isNaN(bearing) || bearing < 0) {
+        bearing = deviceOrientationHeading;
+      }
+      if (bearing !== null && !isNaN(bearing) && bearing >= 0) {
+        centerOptions.bearing = bearing;
+      }
+    } else {
+      centerOptions.bearing = 0; // North-up
     }
     map.easeTo(centerOptions);
   }
@@ -1601,6 +1613,24 @@ function updateNavModeUI() {
   }
 }
 
+function toggleMapBearingMode() {
+  mapBearingMode = mapBearingMode === 'north' ? 'heading' : 'north';
+  const compassBtn = document.getElementById('btn-compass');
+  if (compassBtn) {
+    if (mapBearingMode === 'heading') {
+      compassBtn.classList.add('active');
+      compassBtn.style.background = 'var(--accent)';
+      showToast('🧭 Heading-up mode');
+    } else {
+      compassBtn.classList.remove('active');
+      compassBtn.style.background = '';
+      showToast('🧭 North-up mode');
+      // Immediately reset map to north
+      map.easeTo({ bearing: 0, duration: 300 });
+    }
+  }
+}
+
 function startTimer() {
   rideTimerInterval = setInterval(() => {
     const elapsed = Math.floor((Date.now() - rideData.startTime) / 1000);
@@ -1626,6 +1656,13 @@ function haversineDistance(a, b) {
 function handleOrientation(e) {
   if (e.gamma !== null) {
     leanAngle = e.gamma;
+  }
+  // Track compass heading for map rotation
+  if (e.webkitCompassHeading !== null && !isNaN(e.webkitCompassHeading)) {
+    deviceOrientationHeading = e.webkitCompassHeading;
+  } else if (e.alpha !== null && !isNaN(e.alpha)) {
+    // Android fallback: alpha is rotation from north (0 = north, increasing clockwise)
+    deviceOrientationHeading = e.alpha;
   }
 }
 
