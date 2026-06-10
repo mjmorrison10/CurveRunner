@@ -2500,6 +2500,18 @@ function initFirebase() {
     firebaseAuth = firebase.auth();
     firebaseDb = firebase.firestore();
 
+    // Handle redirect result from signInWithRedirect (page reloads after redirect)
+    firebaseAuth.getRedirectResult().then(result => {
+      if (result.user) {
+        showToast('Signed in with Google');
+      }
+    }).catch(error => {
+      if (error.code !== 'auth/no-auth-event') {
+        console.error('Redirect result error', error);
+        showToast('Sign-in error: ' + error.message);
+      }
+    });
+
     firebaseAuth.onAuthStateChanged(user => {
       currentUser = user;
       updateAuthUI();
@@ -2538,8 +2550,8 @@ async function signInWithGoogle() {
   if (!firebaseAuth) return showToast('Firebase not configured');
   const provider = new firebase.auth.GoogleAuthProvider();
   try {
-    await firebaseAuth.signInWithPopup(provider);
-    showToast('Signed in with Google');
+    await firebaseAuth.signInWithRedirect(provider);
+    // Page reloads after redirect; getRedirectResult handles the rest
   } catch (e) {
     showToast('Google sign-in failed: ' + e.message);
   }

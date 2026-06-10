@@ -82,4 +82,25 @@
 
 ---
 
+---
+
+## Firebase Setup (Required for Cloud Sync)
+
+1. Go to [Firebase Console](https://console.firebase.google.com/project/curverunner-b224e)
+2. **Authentication → Sign-in method** → enable **Google** and **Email/Password**
+3. **Authentication → Settings → Authorized domains** → add `mjmorrison10.github.io`
+4. **Firestore Database → Create database** → Start in production mode
+5. **Firestore Rules** → paste and publish:
+   ```javascript
+   rules_version = '2';
+   service cloud.firestore {
+     match /databases/{database}/documents {
+       match /users/{userId}/{document=**} {
+         allow read, write: if request.auth != null && request.auth.uid == userId;
+       }
+     }
+   }
+   ```
+   > **Note:** `{document=**}` is a recursive wildcard that allows ALL subcollections under the user's document (e.g., `/users/{uid}/rides/{rideId}`). Without it, writes to subcollections will fail with "Missing or insufficient permissions."
+
 *Toggle Free / Premium anytime from the button in the top bar. Sign in via Settings to enable cloud sync.*
