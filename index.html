@@ -16,6 +16,48 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <!-- Welcome / Onboarding Screen -->
+  <div id="welcome-screen" class="hidden">
+    <div class="welcome-content">
+      <div class="welcome-logo">🏍️ CurveRunner</div>
+      <h1>Welcome to CurveRunner</h1>
+      <p class="welcome-tagline">The ultimate motorcycle navigation app built for riders who love curves.</p>
+
+      <div class="welcome-auth">
+        <button id="btn-google-signin" class="btn-primary welcome-btn">
+          <span class="google-icon">G</span> Continue with Google
+        </button>
+
+        <div class="divider">or use email</div>
+
+        <div class="email-auth-form">
+          <input type="email" id="welcome-email" placeholder="Email address" autocomplete="email">
+          <input type="password" id="welcome-password" placeholder="Password (min 6 chars)" autocomplete="current-password">
+          <div class="email-btns">
+            <button id="btn-email-signin" class="btn-secondary">Sign In</button>
+            <button id="btn-email-signup" class="btn-secondary">Create Account</button>
+          </div>
+        </div>
+      </div>
+
+      <button id="btn-skip-auth" class="btn-text welcome-btn">Continue without account</button>
+
+      <div class="welcome-benefits">
+        <h3>Why create an account?</h3>
+        <ul>
+          <li>☁️ Save all your rides to the cloud</li>
+          <li>📊 View your stats on any device</li>
+          <li>🔄 Automatic sync across phones & tablets</li>
+          <li>🗺️ Never lose your ride history</li>
+        </ul>
+      </div>
+
+      <div class="welcome-footer">
+        <button id="btn-install-help" class="btn-text">❓ How to install this app</button>
+      </div>
+    </div>
+  </div>
+
   <div id="app">
     <div id="map"></div>
 
@@ -189,6 +231,12 @@
       <p style="margin-bottom:6px;font-size:0.85rem;color:var(--text-dim)">Saved Offline Routes</p>
       <ul id="saved-routes-list"></ul>
     </div>
+    <div style="margin-bottom:14px" id="settings-account-section">
+      <p style="margin-bottom:6px;font-size:0.85rem;color:var(--text-dim)">Account</p>
+      <div id="account-status" style="font-size:0.85rem;color:var(--text);margin-bottom:8px;">Not signed in</div>
+      <button id="btn-settings-signin" class="btn-primary">Sign In / Create Account</button>
+      <button id="btn-settings-signout" class="btn-secondary hidden">Sign Out</button>
+    </div>
     <div class="row-btns"><button class="btn-secondary close-modal">Close</button></div>
   </div>
 
@@ -222,9 +270,35 @@
     <div class="row-btns"><button class="btn-secondary close-modal">Close</button></div>
   </div>
 
+  <div id="modal-install-help" class="modal hidden">
+    <h2>How to Install CurveRunner</h2>
+    <div class="install-instructions">
+      <h3>📱 iPhone / iPad</h3>
+      <ol>
+        <li>Open this page in <strong>Safari</strong></li>
+        <li>Tap the <strong>Share</strong> button (square with arrow) at the bottom</li>
+        <li>Scroll down and tap <strong>"Add to Home Screen"</strong></li>
+        <li>Tap <strong>Add</strong> in the top right</li>
+      </ol>
+      <h3>🤖 Android</h3>
+      <ol>
+        <li>Open this page in <strong>Chrome</strong></li>
+        <li>Tap the <strong>Menu</strong> (⋮) in the top right</li>
+        <li>Tap <strong>"Add to Home Screen"</strong> or <strong>"Install App"</strong></li>
+        <li>Tap <strong>Install</strong></li>
+      </ol>
+      <p class="install-tip">Once installed, CurveRunner launches full-screen, works offline, and stays in your app drawer like a native app.</p>
+    </div>
+    <div class="row-btns"><button class="btn-secondary close-modal">Close</button></div>
+  </div>
+
   <input type="file" id="photo-capture" accept="image/*" capture="environment" class="hidden">
 
   <script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
+  <!-- Firebase Auth & Firestore (compat SDK) — load even if not configured so UI works everywhere -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

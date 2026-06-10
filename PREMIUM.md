@@ -62,10 +62,15 @@
 - **Friends watch your dot** — anyone who opens the shared link sees your live position on their map as a green dot
 - **No account needed** — just share the link and ride. No backend server required.
 
+### Account & Cloud Sync
+- **Cross-device ride history** — create a free account with Google or email to back up every ride to the cloud. View your stats, replays, and photos on any phone or tablet
+- **Automatic sync** — finish a ride on one device, open the app on another, and your history appears instantly
+- **No lock-in** — export any ride as GPX at any time; your data is always yours
+
 ### Coming Soon to Premium
 - Additional route styles (scenic, fastest, etc.)
 - Export to Scenic / Calimoto formats
 
 ---
 
-*Toggle Free / Premium anytime from the button in the top bar.*
+*Toggle Free / Premium anytime from the button in the top bar. Sign in via Settings to enable cloud sync.*

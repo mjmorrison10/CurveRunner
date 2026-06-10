@@ -1,4 +1,4 @@
-const CACHE_NAME = 'curve-runner-v2';
+const CACHE_NAME = 'curve-runner-v3';
 const ASSETS = [
   './',
   './index.html',
@@ -29,7 +29,7 @@ self.addEventListener('fetch', (e) => {
     caches.match(e.request).then(cached => {
       return cached || fetch(e.request).then(response => {
         const url = e.request.url;
-        if (url.includes('tile.openstreetmap.org') || url.includes('openstreetmap.de') || url.includes('unpkg.com')) {
+        if (url.includes('tile.openstreetmap.org') || url.includes('openstreetmap.de') || url.includes('unpkg.com') || url.includes('gstatic.com')) {
           const clone = response.clone();
           caches.open(CACHE_NAME).then(cache => cache.put(e.request, clone));
         }

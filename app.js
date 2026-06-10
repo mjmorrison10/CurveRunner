@@ -34,6 +34,26 @@ let replayMode = 'speed';
 let mapBearingMode = 'north'; // 'north' or 'heading'
 let deviceOrientationHeading = 0;
 
+// ============================================
+// FIREBASE CONFIG — Replace with your own values from
+// https://console.firebase.google.com → Project Settings → Your apps
+// Leave as-is to run entirely offline (no cloud sync).
+// ============================================
+const firebaseConfig = {
+  apiKey: "YOUR_API_KEY",
+  authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+  projectId: "YOUR_PROJECT_ID",
+  storageBucket: "YOUR_PROJECT_ID.appspot.com",
+  messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
+  appId: "YOUR_APP_ID"
+};
+const FIREBASE_CONFIGURED = firebaseConfig.apiKey !== "YOUR_API_KEY";
+
+let firebaseApp = null;
+let firebaseAuth = null;
+let firebaseDb = null;
+let currentUser = null;
+
 // Suppress harmless MapLibre tile-abort noise
 window.addEventListener('unhandledrejection', (e) => {
   if (e.reason && e.reason.name === 'AbortError' && e.reason.message && e.reason.message.includes('aborted')) {
@@ -47,6 +67,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     initMap();
     initUI();
     loadHistory();
+    initFirebase();
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('sw.js').then(reg => {
         reg.addEventListener('updatefound', () => {
@@ -387,6 +408,22 @@ function initUI() {
     if (replayState && replayState.ride && replayState.ride.curves) showCurveModal(replayState.ride.curves);
     else showToast('No curve data for this ride');
   });
+
+  // Welcome screen listeners
+  document.getElementById('btn-google-signin')?.addEventListener('click', signInWithGoogle);
+  document.getElementById('btn-email-signin')?.addEventListener('click', signInWithEmail);
+  document.getElementById('btn-email-signup')?.addEventListener('click', signUpWithEmail);
+  document.getElementById('btn-skip-auth')?.addEventListener('click', () => {
+    localStorage.setItem('curveRunner_welcomeSeen', 'true');
+    hideWelcomeScreen();
+  });
+  document.getElementById('btn-install-help')?.addEventListener('click', showInstallHelpModal);
+  document.getElementById('btn-settings-signin')?.addEventListener('click', () => {
+    document.querySelectorAll('.modal').forEach(m => m.classList.add('hidden'));
+    document.getElementById('modal-overlay').classList.add('hidden');
+    showWelcomeScreen();
+  });
+  document.getElementById('btn-settings-signout')?.addEventListener('click', signOutUser);
 
   initPanelDrag();
 
@@ -1764,7 +1801,10 @@ function importGPX(file) {
 function saveRide(ride) {
   const tx = db.transaction('rides', 'readwrite');
   tx.objectStore('rides').add(ride);
-  tx.oncomplete = () => loadHistory();
+  tx.oncomplete = () => {
+    loadHistory();
+    if (currentUser) saveRideToCloud(ride);
+  };
 }
 
 function loadHistory() {
@@ -2385,6 +2425,183 @@ function showToast(msg) {
     toast.style.transition = 'opacity 0.5s';
     setTimeout(() => toast.remove(), 500);
   }, 3000);
+}
+
+/* ---------- Welcome Screen & Auth ---------- */
+
+function initFirebase() {
+  if (!FIREBASE_CONFIGURED) {
+    console.log('Firebase not configured. Cloud sync disabled.');
+    checkWelcomeScreen();
+    return;
+  }
+  try {
+    firebaseApp = firebase.initializeApp(firebaseConfig);
+    firebaseAuth = firebase.auth();
+    firebaseDb = firebase.firestore();
+
+    firebaseAuth.onAuthStateChanged(user => {
+      currentUser = user;
+      updateAuthUI();
+      if (user) {
+        hideWelcomeScreen();
+        syncRidesFromCloud();
+      } else {
+        checkWelcomeScreen();
+      }
+    });
+  } catch (e) {
+    console.error('Firebase init failed', e);
+    checkWelcomeScreen();
+  }
+}
+
+function checkWelcomeScreen() {
+  if (localStorage.getItem('curveRunner_welcomeSeen') === 'true') {
+    hideWelcomeScreen();
+    return;
+  }
+  showWelcomeScreen();
+}
+
+function showWelcomeScreen() {
+  const screen = document.getElementById('welcome-screen');
+  if (screen) screen.classList.remove('hidden');
+}
+
+function hideWelcomeScreen() {
+  const screen = document.getElementById('welcome-screen');
+  if (screen) screen.classList.add('hidden');
+}
+
+async function signInWithGoogle() {
+  if (!firebaseAuth) return showToast('Firebase not configured');
+  const provider = new firebase.auth.GoogleAuthProvider();
+  try {
+    await firebaseAuth.signInWithPopup(provider);
+    showToast('Signed in with Google');
+  } catch (e) {
+    showToast('Google sign-in failed: ' + e.message);
+  }
+}
+
+async function signInWithEmail() {
+  if (!firebaseAuth) return showToast('Firebase not configured');
+  const email = document.getElementById('welcome-email').value.trim();
+  const password = document.getElementById('welcome-password').value;
+  if (!email || !password) return showToast('Enter email and password');
+  try {
+    await firebaseAuth.signInWithEmailAndPassword(email, password);
+    showToast('Signed in');
+  } catch (e) {
+    showToast('Sign in failed: ' + e.message);
+  }
+}
+
+async function signUpWithEmail() {
+  if (!firebaseAuth) return showToast('Firebase not configured');
+  const email = document.getElementById('welcome-email').value.trim();
+  const password = document.getElementById('welcome-password').value;
+  if (!email || !password) return showToast('Enter email and password');
+  if (password.length < 6) return showToast('Password must be at least 6 characters');
+  try {
+    await firebaseAuth.createUserWithEmailAndPassword(email, password);
+    showToast('Account created!');
+  } catch (e) {
+    showToast('Sign up failed: ' + e.message);
+  }
+}
+
+async function signOutUser() {
+  if (!firebaseAuth) return;
+  try {
+    await firebaseAuth.signOut();
+    showToast('Signed out');
+  } catch (e) {
+    showToast('Sign out failed: ' + e.message);
+  }
+}
+
+function updateAuthUI() {
+  const statusDiv = document.getElementById('account-status');
+  const signInBtn = document.getElementById('btn-settings-signin');
+  const signOutBtn = document.getElementById('btn-settings-signout');
+  if (!statusDiv || !signInBtn || !signOutBtn) return;
+
+  if (currentUser) {
+    const name = currentUser.displayName || currentUser.email || 'Signed in';
+    statusDiv.textContent = '☁️ ' + name;
+    signInBtn.classList.add('hidden');
+    signOutBtn.classList.remove('hidden');
+  } else {
+    statusDiv.textContent = 'Not signed in — rides saved locally only';
+    signInBtn.classList.remove('hidden');
+    signOutBtn.classList.add('hidden');
+  }
+}
+
+function showInstallHelpModal() {
+  document.getElementById('modal-overlay').classList.remove('hidden');
+  document.getElementById('modal-install-help').classList.remove('hidden');
+}
+
+/* ---------- Cloud Sync ---------- */
+
+async function saveRideToCloud(ride) {
+  if (!currentUser || !firebaseDb) return;
+  try {
+    const cloudData = { ...ride };
+    delete cloudData.syncedAt; // will be added by server
+    await firebaseDb.collection('users').doc(currentUser.uid).collection('rides').doc(String(ride.id)).set({
+      ...cloudData,
+      syncedAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+    console.log('Ride saved to cloud');
+  } catch (e) {
+    console.error('Cloud save failed', e);
+    showToast('Cloud sync failed — saved locally');
+  }
+}
+
+async function syncRidesFromCloud() {
+  if (!currentUser || !firebaseDb) return;
+  try {
+    showToast('Syncing rides from cloud...');
+    const snapshot = await firebaseDb.collection('users').doc(currentUser.uid).collection('rides').get();
+    const cloudRides = snapshot.docs.map(d => {
+      const data = d.data();
+      // Remove Firestore timestamp objects before storing in IndexedDB
+      delete data.syncedAt;
+      return data;
+    });
+
+    const tx = db.transaction('rides', 'readwrite');
+    const store = tx.objectStore('rides');
+
+    const getAllReq = store.getAll();
+    getAllReq.onsuccess = (e) => {
+      const localRides = e.target.result;
+      const localIds = new Set(localRides.map(r => r.id));
+      let added = 0;
+      for (const ride of cloudRides) {
+        if (!localIds.has(ride.id)) {
+          store.add(ride);
+          added++;
+        }
+      }
+      tx.oncomplete = () => {
+        if (added > 0) {
+          showToast(`Synced ${added} ride${added > 1 ? 's' : ''} from cloud`);
+          loadHistory();
+        } else {
+          showToast('Rides up to date');
+        }
+      };
+    };
+  } catch (e) {
+    console.error('Cloud sync failed', e);
+    showToast('Cloud sync failed');
+  }
 }
 
 function toggleReplayLeanMode() {

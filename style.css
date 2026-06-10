@@ -470,10 +470,208 @@ input[type="checkbox"] { width: 22px; height: 22px; accent-color: var(--accent);
 .group-rider-item .name { font-weight: 700; font-size: 0.9rem; }
 .group-rider-item .pos { font-size: 0.75rem; color: var(--text-dim); }
 
+/* Welcome Screen */
+#welcome-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: linear-gradient(180deg, #1a1a1a 0%, #0d0d0d 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: env(safe-area-inset-top) 20px env(safe-area-inset-bottom) 20px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+#welcome-screen.hidden { display: none !important; }
+
+.welcome-content {
+  width: 100%;
+  max-width: 420px;
+  text-align: center;
+  padding: 24px 0;
+}
+
+.welcome-logo {
+  font-size: 3.5rem;
+  margin-bottom: 8px;
+  line-height: 1;
+}
+
+.welcome-content h1 {
+  font-size: 1.6rem;
+  color: var(--accent);
+  margin-bottom: 8px;
+  font-weight: 800;
+}
+
+.welcome-tagline {
+  font-size: 0.95rem;
+  color: var(--text-dim);
+  margin-bottom: 28px;
+  line-height: 1.5;
+  padding: 0 8px;
+}
+
+.welcome-auth {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.welcome-btn {
+  width: 100%;
+  padding: 14px;
+  font-size: 1rem;
+  border-radius: 12px;
+  border: none;
+  cursor: pointer;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  transition: transform 0.15s, opacity 0.15s;
+}
+.welcome-btn:active { transform: scale(0.98); opacity: 0.9; }
+
+.google-icon {
+  width: 24px; height: 24px; border-radius: 50%;
+  background: #fff; color: #4285f4; font-weight: 800;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 0.85rem; font-family: serif;
+}
+
+.divider {
+  color: var(--text-dim);
+  font-size: 0.8rem;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 4px 0;
+}
+.divider::before, .divider::after {
+  content: ''; flex: 1; height: 1px; background: var(--border);
+}
+
+.email-auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.email-auth-form input[type="email"],
+.email-auth-form input[type="password"] {
+  width: 100%;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 12px;
+  border-radius: 10px;
+  font-size: 1rem;
+  outline: none;
+}
+.email-auth-form input:focus { border-color: var(--accent); }
+
+.email-btns {
+  display: flex;
+  gap: 10px;
+}
+.email-btns button { flex: 1; padding: 12px; font-size: 0.9rem; }
+
+.btn-text {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 0.9rem;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  padding: 8px;
+  transition: color 0.2s;
+}
+.btn-text:hover, .btn-text:active { color: var(--text); }
+
+.welcome-benefits {
+  background: rgba(255, 107, 0, 0.06);
+  border: 1px solid rgba(255, 107, 0, 0.2);
+  border-radius: 12px;
+  padding: 16px;
+  margin: 20px 0 24px;
+  text-align: left;
+}
+.welcome-benefits h3 {
+  font-size: 0.95rem;
+  color: var(--accent);
+  margin-bottom: 10px;
+  text-align: center;
+}
+.welcome-benefits ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.welcome-benefits li {
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  padding: 6px 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid rgba(255, 107, 0, 0.1);
+}
+.welcome-benefits li:last-child { border-bottom: none; }
+
+.welcome-footer {
+  margin-top: auto;
+  padding-top: 16px;
+}
+
+/* Install Help Modal */
+.install-instructions {
+  text-align: left;
+  font-size: 0.9rem;
+  color: var(--text);
+}
+.install-instructions h3 {
+  font-size: 1rem;
+  color: var(--accent);
+  margin: 16px 0 8px;
+}
+.install-instructions ol {
+  padding-left: 20px;
+  margin-bottom: 12px;
+}
+.install-instructions li {
+  margin-bottom: 6px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+.install-instructions li strong { color: var(--text); }
+.install-tip {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  font-style: italic;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+/* Account status in settings */
+#account-status {
+  word-break: break-all;
+}
+
 @media (max-height: 700px) {
   #bottom-panel { max-height: 50vh; }
   .hud-item span { font-size: 1.2rem; }
   #waypoint-list { max-height: 160px; }
   #replay-hud { width: 180px; }
   #replay-hud .hud-item span { font-size: 1.2rem; }
+  .welcome-content { padding: 16px 0; }
+  .welcome-logo { font-size: 2.8rem; }
+  .welcome-content h1 { font-size: 1.3rem; }
+  .welcome-tagline { margin-bottom: 18px; }
+  .welcome-benefits { margin: 12px 0 16px; padding: 12px; }
 }
