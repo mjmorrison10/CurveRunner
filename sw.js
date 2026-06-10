@@ -1,4 +1,4 @@
-const CACHE_NAME = 'curve-runner-v5';
+const CACHE_NAME = 'curve-runner-v6';
 const ASSETS = [
   './',
   './index.html',
@@ -9,16 +9,7 @@ const ASSETS = [
   './favicon.png'
 ];
 
-// URLs that are safe to cache (GET requests for static assets / tiles only)
-function shouldCache(url) {
-  if (url.includes('tile.openstreetmap.org')) return true; // map tiles
-  if (url.includes('unpkg.com')) return true; // MapLibre, Firebase SDKs
-  if (url.includes('gstatic.com')) return true; // Google assets (Firebase)
-  if (url.includes('openstreetmap.org') && url.endsWith('.png')) return true; // tile images
-  return false;
-}
-
-// API endpoints that should NOT be cached (POST/CORS sensitive)
+// API endpoints that should NEVER be touched by the service worker
 function isApiEndpoint(url) {
   return url.includes('valhalla1.openstreetmap.de') ||
          url.includes('nominatim.openstreetmap.org') ||
@@ -43,45 +34,29 @@ self.addEventListener('activate', (e) => {
 
 self.addEventListener('fetch', (e) => {
   const url = e.request.url;
-  const isGet = e.request.method === 'GET';
 
-  // --- API calls (POST, CORS) — never cache, just fetch ---
+  // --- API calls (POST, CORS-sensitive) — pass through completely, do not intercept ---
   if (isApiEndpoint(url)) {
-    e.respondWith(
-      fetch(e.request).catch(() => {
-        return new Response(JSON.stringify({ error: 'Offline — no network connection' }), {
-          status: 503,
-          headers: { 'Content-Type': 'application/json' }
-        });
-      })
-    );
-    return;
+    return; // Let browser handle it natively
   }
 
-  // --- Static assets / tiles — cache-first with network fallback ---
-  if (isGet && shouldCache(url)) {
-    e.respondWith(
-      caches.match(e.request).then(cached => {
-        if (cached) return cached;
-        return fetch(e.request).then(response => {
-          const clone = response.clone();
-          caches.open(CACHE_NAME).then(cache => cache.put(e.request, clone));
-          return response;
-        }).catch(() => {
-          return cached; // already null if we got here, but safe fallback
-        });
-      })
-    );
-    return;
-  }
-
-  // --- App shell / navigation — network-first with cache fallback ---
+  // --- Tile requests and static assets — cache-first with network fallback ---
   e.respondWith(
-    fetch(e.request).then(response => {
-      return response;
-    }).catch(() => {
-      return caches.match(e.request).then(cached => {
-        return cached || new Response('Offline', { status: 503, headers: { 'Content-Type': 'text/plain' } });
+    caches.match(e.request).then(cached => {
+      if (cached) return cached;
+      return fetch(e.request).then(response => {
+        // Only cache GET requests for tiles and CDN assets
+        if (e.request.method === 'GET' && response.ok) {
+          const isTile = url.includes('tile.openstreetmap.org') || url.includes('.png') || url.includes('.jpg');
+          const isCDN = url.includes('unpkg.com') || url.includes('gstatic.com');
+          if (isTile || isCDN) {
+            const clone = response.clone();
+            caches.open(CACHE_NAME).then(cache => cache.put(e.request, clone));
+          }
+        }
+        return response;
+      }).catch(() => {
+        return cached;
       });
     })
   );

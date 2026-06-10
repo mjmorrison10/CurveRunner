@@ -755,37 +755,42 @@ function getRouteOptionNames(count) {
   return result;
 }
 
+async function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 async function discoverRoutes(start, end, waypoints = null) {
   const costingOptions = buildCostingOptions();
-  const levels = [0, 100, 50, 25, 75, 12, 37, 62, 87, 6, 18, 31, 43, 56, 68, 81, 93];
+  // Fewer, more strategically spaced levels to reduce API load
+  const levels = [0, 100, 50, 25, 75, 12, 62, 87, 37];
   const distinctRoutes = [];
 
-  for (let i = 0; i < levels.length; i += 3) {
-    const batch = levels.slice(i, i + 3);
-    const promises = batch.map(async level => {
-      try {
-        let route;
-        if (waypoints) {
-          const pts = generateWaypointCurvyPath(waypoints, level);
-          route = await fetchRoute(pts, costingOptions);
-        } else {
-          const intermediates = generateCurvyWaypoints(start, end, level);
-          route = await fetchRoute([start, ...intermediates, end], costingOptions);
-        }
-        return route;
-      } catch (e) {
-        return null;
-      }
-    });
+  for (const level of levels) {
+    if (distinctRoutes.length >= 6) break; // enough options
 
-    const results = await Promise.all(promises);
-    for (const route of results) {
+    try {
+      let route;
+      if (waypoints) {
+        const pts = generateWaypointCurvyPath(waypoints, level);
+        route = await fetchRoute(pts, costingOptions);
+      } else {
+        const intermediates = generateCurvyWaypoints(start, end, level);
+        route = await fetchRoute([start, ...intermediates, end], costingOptions);
+      }
+
       if (route && !isDuplicateRoute(route, distinctRoutes)) {
         distinctRoutes.push(route);
-        if (distinctRoutes.length >= 10) break;
+      }
+    } catch (e) {
+      console.warn('Route discovery level failed:', level, e.message);
+      // If rate limited, wait longer before next attempt
+      if (e.message && e.message.includes('429')) {
+        await sleep(2000);
       }
     }
-    if (distinctRoutes.length >= 10) break;
+
+    // Delay between requests to avoid hammering the free server
+    await sleep(600);
   }
 
   return distinctRoutes;
@@ -974,7 +979,7 @@ function generateCurvyWaypoints(start, end, curviness) {
   return pts;
 }
 
-async function fetchRoute(locations, costingOptions = {}) {
+async function fetchRoute(locations, costingOptions = {}, retries = 2) {
   const body = {
     locations: locations.map(loc => ({ lon: loc[0], lat: loc[1] })),
     costing: 'motorcycle',
@@ -991,18 +996,30 @@ async function fetchRoute(locations, costingOptions = {}) {
     }
   };
 
-  const res = await fetch(VALHALLA_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  });
+  let lastError;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    if (attempt > 0) {
+      const delay = Math.min(1000 * Math.pow(2, attempt - 1), 4000);
+      await sleep(delay);
+    }
 
+    try {
+      const res = await fetch(VALHALLA_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+
+      if (res.status === 429) {
+        lastError = new Error('429 Too Many Requests');
+        continue; // retry
+      }
   if (!res.ok) throw new Error('HTTP ' + res.status);
   const data = await res.json();
   if (data.error) throw new Error(data.error);
   if (!data.trip || !data.trip.legs || !data.trip.legs.length) throw new Error('No route found');
 
-  // Concatenate all legs into a single continuous route
+      // Concatenate all legs into a single continuous route
   let allCoords = [];
   let allManeuvers = [];
   let shapeOffset = 0;
@@ -1035,12 +1052,18 @@ async function fetchRoute(locations, costingOptions = {}) {
     shapeOffset += coords.length;
   }
 
-  return {
-    geometry: { type: 'LineString', coordinates: allCoords },
-    maneuvers: allManeuvers,
-    length: data.trip.summary ? data.trip.summary.length : 0,
-    time: data.trip.summary ? data.trip.summary.time : 0
-  };
+      return {
+        geometry: { type: 'LineString', coordinates: allCoords },
+        maneuvers: allManeuvers,
+        length: data.trip.summary ? data.trip.summary.length : 0,
+        time: data.trip.summary ? data.trip.summary.time : 0
+      };
+    } catch (e) {
+      lastError = e;
+      if (attempt >= retries) throw e;
+    }
+  }
+  throw lastError || new Error('Routing failed after retries');
 }
 
 function decodePolyline(str, precision = 6) {
