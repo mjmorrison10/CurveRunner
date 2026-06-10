@@ -24,6 +24,7 @@ let db = null;
   let replayState = null;
 let isPremium = localStorage.getItem('curveRunner_premium') !== 'false';
 let autoRouteTimeout = null;
+let navFollowMode = true;
 
 // Suppress harmless MapLibre tile-abort noise
 window.addEventListener('unhandledrejection', (e) => {
@@ -334,6 +335,8 @@ function initUI() {
   });
   document.getElementById('btn-premium').addEventListener('click', togglePremium);
   document.getElementById('btn-elevation').addEventListener('click', () => showElevationModalForRoute());
+  document.getElementById('btn-nav-follow').addEventListener('click', () => toggleNavMode('follow'));
+  document.getElementById('btn-nav-overview').addEventListener('click', () => toggleNavMode('overview'));
   document.getElementById('btn-replay-elevation').addEventListener('click', () => {
     if (replayState && replayState.ride) showElevationModalForRide(replayState.ride);
   });
@@ -1185,11 +1188,37 @@ if ('speechSynthesis' in window) {
 
 /* ---------- Ride Recording ---------- */
 
-function startRide() {
-  if (!currentRoute) return;
+async function startRide() {
+  if (!currentRoute) {
+    return showToast('No route to follow. Plan a route first.');
+  }
+
+  // Hide button immediately so double-taps don't start multiple rides
+  document.getElementById('btn-start-ride').classList.add('hidden');
+
+  let userPos;
+  try {
+    userPos = await getCurrentPosition();
+  } catch (e) {
+    document.getElementById('btn-start-ride').classList.remove('hidden');
+    return showToast('GPS required: ' + geolocationErrorMessage(e));
+  }
+
+  const userCoords = [userPos[0], userPos[1]];
+
+  // Snap current GPS position to the route and find upcoming turn
+  snapToRoute(userCoords);
+
+  // Default to follow mode
+  navFollowMode = true;
+  updateNavModeUI();
+  document.getElementById('nav-mode-toggle').classList.remove('hidden');
+
+  // Center map on rider for immediate nav feel
+  map.easeTo({ center: userCoords, zoom: 18, duration: 600 });
+
   isRiding = true;
   rideData = { points: [], distance: 0, startTime: Date.now(), maxLean: 0, maxSpeed: 0 };
-  nextStepIdx = 0;
   announceState = {};
 
   document.getElementById('btn-start-ride').classList.add('hidden');
@@ -1206,6 +1235,43 @@ function startRide() {
 
   startTimer();
   speak('Ride started. Navigate safely.');
+}
+
+function snapToRoute(userCoords) {
+  if (!currentRoute || !currentRoute.maneuvers.length) return;
+
+  const coords = currentRoute.geometry.coordinates;
+  let minDist = Infinity;
+  let nearestIdx = 0;
+
+  for (let i = 0; i < coords.length; i++) {
+    const d = haversineDistance(userCoords, coords[i]);
+    if (d < minDist) {
+      minDist = d;
+      nearestIdx = i;
+    }
+  }
+
+  // Find the next upcoming maneuver based on nearest route point
+  let nextIdx = currentRoute.maneuvers.length - 1;
+  for (let i = 0; i < currentRoute.maneuvers.length; i++) {
+    const m = currentRoute.maneuvers[i];
+    if (m.end_shape_index >= nearestIdx) {
+      nextIdx = i;
+      break;
+    }
+  }
+
+  nextStepIdx = nextIdx;
+  announceState = {};
+
+  // Update nav banner immediately
+  const man = currentRoute.maneuvers[nextStepIdx];
+  if (man) {
+    document.getElementById('nav-instruction').textContent = man.instruction;
+    document.getElementById('nav-distance').textContent = man.length ? man.length.toFixed(1) + ' km' : '';
+    document.getElementById('nav-banner').classList.remove('hidden');
+  }
 }
 
 function stopRide() {
@@ -1233,8 +1299,10 @@ function stopRide() {
   document.getElementById('warning-banner').classList.add('hidden');
   document.getElementById('bottom-panel').classList.remove('collapsed');
   document.getElementById('nav-banner').classList.add('hidden');
+  document.getElementById('nav-mode-toggle').classList.add('hidden');
 
   nextStepIdx = 0;
+  navFollowMode = true;
   announceState = {};
 }
 
@@ -1267,12 +1335,47 @@ function handleRidePosition(position) {
   document.getElementById('hud-dist').textContent = rideData.distance.toFixed(1);
   document.getElementById('hud-lean').textContent = Math.round(leanAngle) + '°';
 
+  // Follow rider in nav mode
+  if (navFollowMode) {
+    const centerOptions = { center: coords, duration: 500, easing: t => t };
+    if (position.coords.heading !== null && !isNaN(position.coords.heading)) {
+      centerOptions.bearing = position.coords.heading;
+    }
+    map.easeTo(centerOptions);
+  }
+
   updateNav(position);
 }
 
 function updateNav(position) {
   if (!currentRoute || !currentRoute.maneuvers.length) return;
+
+  const userCoords = [position.coords.longitude, position.coords.latitude];
+  const coords = currentRoute.geometry.coordinates;
   const maneuvers = currentRoute.maneuvers;
+
+  // Dynamically re-snap to route to skip completed maneuvers
+  let minDist = Infinity;
+  let nearestIdx = 0;
+  for (let i = 0; i < coords.length; i++) {
+    const d = haversineDistance(userCoords, coords[i]);
+    if (d < minDist) {
+      minDist = d;
+      nearestIdx = i;
+    }
+  }
+  let currentManIdx = 0;
+  for (let i = 0; i < maneuvers.length; i++) {
+    if (maneuvers[i].end_shape_index >= nearestIdx) {
+      currentManIdx = i;
+      break;
+    }
+  }
+  if (currentManIdx > nextStepIdx) {
+    nextStepIdx = currentManIdx;
+    announceState = {}; // reset for new upcoming turns
+  }
+
   if (nextStepIdx >= maneuvers.length) {
     document.getElementById('nav-instruction').textContent = 'You have arrived';
     document.getElementById('nav-distance').textContent = '';
@@ -1281,10 +1384,10 @@ function updateNav(position) {
 
   const man = maneuvers[nextStepIdx];
   const idx = man.begin_shape_index;
-  if (idx === undefined || idx >= currentRoute.geometry.coordinates.length) return;
+  if (idx === undefined || idx >= coords.length) return;
 
-  const manCoord = currentRoute.geometry.coordinates[idx];
-  const dist = haversineDistance([position.coords.longitude, position.coords.latitude], manCoord);
+  const manCoord = coords[idx];
+  const dist = haversineDistance(userCoords, manCoord);
   document.getElementById('nav-distance').textContent = (dist * 1000).toFixed(0) + ' m';
 
   if (!announceState[nextStepIdx]) announceState[nextStepIdx] = {};
@@ -1300,6 +1403,38 @@ function updateNav(position) {
     nextStepIdx++;
     const nextMan = maneuvers[nextStepIdx];
     document.getElementById('nav-instruction').textContent = nextMan ? nextMan.instruction : 'You have arrived';
+  }
+}
+
+function toggleNavMode(mode) {
+  navFollowMode = (mode === 'follow');
+  updateNavModeUI();
+
+  if (navFollowMode) {
+    if (rideData.points.length > 0) {
+      const last = rideData.points[rideData.points.length - 1];
+      map.easeTo({ center: [last.lon, last.lat], zoom: 18, duration: 500 });
+    }
+  } else if (currentRoute) {
+    const bounds = currentRoute.geometry.coordinates.reduce((b, c) => {
+      if (!b) return new maplibregl.LngLatBounds(c, c);
+      b.extend(c);
+      return b;
+    }, null);
+    map.fitBounds(bounds, { padding: 60, maxZoom: 16, duration: 500 });
+  }
+}
+
+function updateNavModeUI() {
+  const followBtn = document.getElementById('btn-nav-follow');
+  const overviewBtn = document.getElementById('btn-nav-overview');
+  if (!followBtn || !overviewBtn) return;
+  if (navFollowMode) {
+    followBtn.classList.add('active');
+    overviewBtn.classList.remove('active');
+  } else {
+    followBtn.classList.remove('active');
+    overviewBtn.classList.add('active');
   }
 }
 

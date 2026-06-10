@@ -29,6 +29,13 @@
 
 ### Everything in Free, plus:
 
+### Live Navigation & Ride Mode
+- **Auto-snap to route on ride start** — when you tap "Start Ride", the app grabs your GPS position, finds the nearest point on the planned route, and immediately begins turn-by-turn navigation from where you are (not from the original start point)
+- **Two navigation view modes** (like Google Maps):
+  - **📍 Follow mode** — map smoothly centers on your live GPS position, rotates to your heading, and zooms in so you can see upcoming turns
+  - **🗺️ Overview mode** — map zooms out to show the entire route at a glance; tap 📍 to snap back to follow mode
+- **Dynamic turn re-snap** — if you skip a turn or take a detour, the app recalculates which maneuver you're closest to every GPS tick and resumes guidance from the next upcoming turn
+
 ### Advanced Waypoint Routing
 - **Unlimited waypoints** — no 3-waypoint cap; route through as many points as you want
 - **Auto-routing through all waypoints** — the actual road route is automatically calculated and displayed through every waypoint as you add them
