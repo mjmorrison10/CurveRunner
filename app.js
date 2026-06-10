@@ -34,6 +34,18 @@ let replayMode = 'speed';
 let mapBearingMode = 'north'; // 'north' or 'heading'
 let deviceOrientationHeading = 0;
 
+let userArrowMarker = null;
+let originalRoute = null;
+let navRoute = null;
+let rerouteActive = false;
+let rerouteTempRoute = null;
+let offRouteCounter = 0;
+let lastRerouteTime = 0;
+let rejoinPointIndex = 0;
+const OFF_ROUTE_THRESHOLD_KM = 0.08;
+const OFF_ROUTE_TRIGGER_COUNT = 3;
+const REROUTE_COOLDOWN = 15000;
+
 // Pocket Mode Calibration
 let pocketCalibration = null;
 let pocketCalibrationTimer = null;
@@ -181,10 +193,16 @@ function initMap() {
   const geolocateControl = new maplibregl.GeolocateControl({
     positionOptions: { enableHighAccuracy: true },
     trackUserLocation: true,
-    showUserLocation: true
+    showUserLocation: false
   });
   map.addControl(new maplibregl.NavigationControl());
   map.addControl(geolocateControl);
+
+  geolocateControl.on('geolocate', (pos) => {
+    const coords = [pos.coords.longitude, pos.coords.latitude];
+    const heading = pos.coords.heading !== null ? pos.coords.heading : deviceOrientationHeading;
+    updateUserArrow(coords, heading);
+  });
 
   map.on('moveend', saveMapView);
   map.on('zoomend', saveMapView);
@@ -248,6 +266,27 @@ function initMap() {
       layout: { 'line-join': 'round', 'line-cap': 'round' },
       paint: { 'line-color': ['get', 'color'], 'line-width': 4, 'line-opacity': 0.9 }
     });
+
+    map.addSource('reroute-source', {
+      type: 'geojson',
+      data: { type: 'Feature', geometry: { type: 'LineString', coordinates: [] } }
+    });
+    map.addLayer({
+      id: 'reroute-layer',
+      type: 'line',
+      source: 'reroute-source',
+      layout: { 'line-join': 'round', 'line-cap': 'round', 'visibility': 'visible' },
+      paint: { 'line-color': '#00aaff', 'line-width': 5, 'line-opacity': 0.8, 'line-dasharray': [6, 4] }
+    });
+
+    // User arrow marker
+    const arrowEl = document.createElement('div');
+    arrowEl.className = 'user-arrow-marker';
+    arrowEl.innerHTML = `<svg width="28" height="28" viewBox="0 0 24 24" fill="#ff6b00" xmlns="http://www.w3.org/2000/svg"><path d="M12 2L4.5 20.29L12 17L19.5 20.29L12 2Z"/></svg>`;
+    arrowEl.style.cssText = 'width:28px;height:28px;filter:drop-shadow(0 2px 4px rgba(0,0,0,0.5));opacity:0;transition:opacity 0.3s;';
+    userArrowMarker = new maplibregl.Marker({ element: arrowEl, rotationAlignment: 'map', anchor: 'center', pitchAlignment: 'map' })
+      .setLngLat(map.getCenter())
+      .addTo(map);
 
     setTimeout(() => {
       try {
@@ -1426,6 +1465,13 @@ async function startRide() {
   // Snap current GPS position to the route and find upcoming turn
   snapToRoute(userCoords);
 
+  originalRoute = currentRoute;
+  navRoute = currentRoute;
+  rerouteActive = false;
+  rerouteTempRoute = null;
+  offRouteCounter = 0;
+  lastRerouteTime = 0;
+
   // Default to follow mode
   navFollowMode = true;
   updateNavModeUI();
@@ -1526,6 +1572,12 @@ function stopRide() {
   document.getElementById('nav-banner').classList.add('hidden');
   document.getElementById('nav-mode-toggle').classList.add('hidden');
 
+  originalRoute = null;
+  navRoute = null;
+  rerouteActive = false;
+  rerouteTempRoute = null;
+  map.getSource('reroute-source').setData({ type: 'Feature', geometry: { type: 'LineString', coordinates: [] } });
+
   stopGroupRideSharing();
   nextStepIdx = 0;
   navFollowMode = true;
@@ -1553,6 +1605,12 @@ function cancelRide() {
   map.getSource(ROUTE_SOURCE).setData({ type: 'Feature', geometry: { type: 'LineString', coordinates: [] } });
   currentRoute = null;
 
+  originalRoute = null;
+  navRoute = null;
+  rerouteActive = false;
+  rerouteTempRoute = null;
+  map.getSource('reroute-source').setData({ type: 'Feature', geometry: { type: 'LineString', coordinates: [] } });
+
   nextStepIdx = 0;
   navFollowMode = true;
   announceState = {};
@@ -1563,6 +1621,9 @@ function handleRidePosition(position) {
   const alt = position.coords.altitude || 0;
   const speed = position.coords.speed || 0;
   const speedKmh = speed * 3.6;
+
+  const heading = position.coords.heading !== null ? position.coords.heading : deviceOrientationHeading;
+  updateUserArrow(coords, heading);
 
   const point = {
     lon: coords[0],
@@ -1618,13 +1679,13 @@ function handleRidePosition(position) {
 }
 
 function updateNav(position) {
-  if (!currentRoute || !currentRoute.maneuvers.length) return;
+  if (!navRoute || !navRoute.maneuvers.length) return;
 
   const userCoords = [position.coords.longitude, position.coords.latitude];
-  const coords = currentRoute.geometry.coordinates;
-  const maneuvers = currentRoute.maneuvers;
+  const coords = navRoute.geometry.coordinates;
+  const maneuvers = navRoute.maneuvers;
 
-  // Dynamically re-snap to route to skip completed maneuvers
+  // Find nearest point on the currently navigated route
   let minDist = Infinity;
   let nearestIdx = 0;
   for (let i = 0; i < coords.length; i++) {
@@ -1634,6 +1695,44 @@ function updateNav(position) {
       nearestIdx = i;
     }
   }
+
+  // Off-route detection against the original planned route
+  if (originalRoute && originalRoute.geometry && originalRoute.geometry.coordinates.length) {
+    const origCoords = originalRoute.geometry.coordinates;
+    let origMinDist = Infinity;
+    let origNearestIdx = 0;
+    for (let i = 0; i < origCoords.length; i++) {
+      const d = haversineDistance(userCoords, origCoords[i]);
+      if (d < origMinDist) {
+        origMinDist = d;
+        origNearestIdx = i;
+      }
+    }
+
+    const now = Date.now();
+    if (!rerouteActive && origMinDist > OFF_ROUTE_THRESHOLD_KM) {
+      offRouteCounter++;
+      if (offRouteCounter >= OFF_ROUTE_TRIGGER_COUNT && (now - lastRerouteTime) > REROUTE_COOLDOWN) {
+        beginReroute(userCoords, origNearestIdx, position.coords.heading);
+      }
+    } else {
+      offRouteCounter = 0;
+      if (rerouteActive) {
+        // Check if we are close enough to the original route to resume
+        if (origMinDist < 0.05) {
+          cancelReroute(origNearestIdx);
+        } else if (rerouteTempRoute && rerouteTempRoute.geometry.coordinates.length) {
+          const tempEnd = rerouteTempRoute.geometry.coordinates[rerouteTempRoute.geometry.coordinates.length - 1];
+          const distToEnd = haversineDistance(userCoords, tempEnd);
+          if (distToEnd < 0.05) {
+            cancelReroute(origNearestIdx);
+          }
+        }
+      }
+    }
+  }
+
+  // Dynamically re-snap to route to skip completed maneuvers
   let currentManIdx = 0;
   for (let i = 0; i < maneuvers.length; i++) {
     if (maneuvers[i].end_shape_index >= nearestIdx) {
@@ -1643,7 +1742,7 @@ function updateNav(position) {
   }
   if (currentManIdx > nextStepIdx) {
     nextStepIdx = currentManIdx;
-    announceState = {}; // reset for new upcoming turns
+    announceState = {};
   }
 
   if (nextStepIdx >= maneuvers.length) {
@@ -1674,6 +1773,111 @@ function updateNav(position) {
     const nextMan = maneuvers[nextStepIdx];
     document.getElementById('nav-instruction').textContent = nextMan ? nextMan.instruction : 'You have arrived';
   }
+}
+
+function updateUserArrow(coords, heading) {
+  if (!userArrowMarker) return;
+  userArrowMarker.setLngLat(coords);
+  if (heading !== null && !isNaN(heading) && heading >= 0) {
+    userArrowMarker.setRotation(heading);
+  }
+  const el = userArrowMarker.getElement();
+  if (el.style.opacity === '0') el.style.opacity = '1';
+}
+
+function calculateBearing(a, b) {
+  const toRad = d => d * Math.PI / 180;
+  const lon1 = toRad(a[0]), lat1 = toRad(a[1]);
+  const lon2 = toRad(b[0]), lat2 = toRad(b[1]);
+  const y = Math.sin(lon2 - lon1) * Math.cos(lat2);
+  const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(lon2 - lon1);
+  const theta = Math.atan2(y, x);
+  return (theta * 180 / Math.PI + 360) % 360;
+}
+
+function findNextManeuverIndex(route, progressIdx) {
+  if (!route || !route.maneuvers) return 0;
+  for (let i = 0; i < route.maneuvers.length; i++) {
+    if (route.maneuvers[i].end_shape_index >= progressIdx) {
+      return i;
+    }
+  }
+  return route.maneuvers.length - 1;
+}
+
+function findRejoinPoint(userCoords, originalRoute, progressIdx, userHeading) {
+  const coords = originalRoute.geometry.coordinates;
+  if (!coords || coords.length < 2) return null;
+  const start = Math.min(progressIdx + 1, coords.length - 1);
+  let bestIdx = -1;
+  let bestScore = Infinity;
+  for (let i = start; i < coords.length; i++) {
+    const d = haversineDistance(userCoords, coords[i]);
+    let score = d;
+    if (userHeading !== null && !isNaN(userHeading)) {
+      const bearing = calculateBearing(userCoords, coords[i]);
+      let diff = Math.abs(bearing - userHeading);
+      diff = Math.min(diff, 360 - diff);
+      if (diff > 120) {
+        score += 0.5; // penalize points behind the rider
+      }
+    }
+    if (score < bestScore) {
+      bestScore = score;
+      bestIdx = i;
+    }
+  }
+  if (bestIdx === -1) return null;
+  if (bestIdx - progressIdx < 5 && bestScore < 0.05) return null; // essentially on route
+  return { point: coords[bestIdx], index: bestIdx, distance: bestScore };
+}
+
+async function beginReroute(userCoords, progressIdx, userHeading) {
+  lastRerouteTime = Date.now();
+  showToast('Off route — recalculating to rejoin…');
+  speak('Off route. Recalculating to rejoin your route.');
+
+  try {
+    const rejoin = findRejoinPoint(userCoords, originalRoute, progressIdx, userHeading);
+    if (!rejoin) {
+      showToast('Stay on route');
+      return;
+    }
+    const costingOptions = buildCostingOptions();
+    const route = await fetchRoute([userCoords, rejoin.point], costingOptions);
+    rerouteTempRoute = route;
+    navRoute = route;
+    rerouteActive = true;
+    rejoinPointIndex = rejoin.index;
+    nextStepIdx = 0;
+    announceState = {};
+
+    map.getSource('reroute-source').setData({
+      type: 'Feature',
+      geometry: route.geometry
+    });
+  } catch (e) {
+    console.error('Reroute failed', e);
+    showToast('Reroute failed: ' + e.message);
+    speak('Reroute failed. Please return to the route.');
+    rerouteActive = false;
+    navRoute = originalRoute;
+  }
+}
+
+function cancelReroute(newProgressIdx) {
+  if (!rerouteActive) return;
+  rerouteActive = false;
+  rerouteTempRoute = null;
+  navRoute = originalRoute;
+  offRouteCounter = 0;
+  map.getSource('reroute-source').setData({ type: 'Feature', geometry: { type: 'LineString', coordinates: [] } });
+
+  nextStepIdx = findNextManeuverIndex(originalRoute, newProgressIdx);
+  announceState = {};
+
+  showToast('Back on route');
+  speak('Back on route.');
 }
 
 function toggleNavMode(mode) {

@@ -14,6 +14,7 @@
 - **Manual "Route Through Points"** — one-click calculation of the actual road route through all waypoints
 - **Up to 3 waypoints** for road routing — add more points, but road routing stops at 3 until you upgrade
 - **Voice navigation** — turn-by-turn speech prompts piped to your Bluetooth helmet
+- **Direction arrow** — your GPS icon is an arrow that points in the direction your phone is facing (using GPS heading or compass). It rotates with the map so it always points the way you're going
 - **Draggable bottom panel** — grab the handle to resize the panel up and down with your finger or mouse
 - **GPX import/export** — bring in routes from other apps, export your planned routes
 - **Autocomplete location search** — as you type "High" or "Cypr", the app queries nearby locations and suggests "Highland, CA", "Cypress, CA", etc.
@@ -37,6 +38,7 @@
   - **🗺️ Overview mode** — map zooms out to show the entire route at a glance; tap 📍 to snap back to follow mode
 - **🧭 Compass toggle** — tap the compass button to alternate between **North-up** (map always points north) and **Heading-up** (map rotates to face the direction your phone is pointed). Uses GPS heading when moving, device compass when stationary
 - **Dynamic turn re-snap** — if you skip a turn or take a detour, the app recalculates which maneuver you're closest to every GPS tick and resumes guidance from the next upcoming turn
+- **Off-route rejoin** — if you miss a turn, the app detects you're off the original route, calculates a temporary path to the nearest point ahead on your planned route, and guides you back. Once you rejoin, it automatically resumes the original route guidance. No U-turns, no backtracking
 - **Cancel navigation** — a "Cancel Navigation" button appears during any ride so you can abort turn-by-turn guidance and return to planning without saving a ride record
 
 ### Advanced Waypoint Routing
