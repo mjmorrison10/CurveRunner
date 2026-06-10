@@ -40,12 +40,13 @@ let deviceOrientationHeading = 0;
 // Leave as-is to run entirely offline (no cloud sync).
 // ============================================
 const firebaseConfig = {
-  apiKey: "YOUR_API_KEY",
-  authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
-  projectId: "YOUR_PROJECT_ID",
-  storageBucket: "YOUR_PROJECT_ID.appspot.com",
-  messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
-  appId: "YOUR_APP_ID"
+  apiKey: "AIzaSyAkZPwOdnRc_s6qw3y4qcUAenCmVQXnpVE",
+  authDomain: "curverunner-b224e.firebaseapp.com",
+  projectId: "curverunner-b224e",
+  storageBucket: "curverunner-b224e.firebasestorage.app",
+  messagingSenderId: "774837234577",
+  appId: "1:774837234577:web:81cbdf4f7208ee642ac830",
+  measurementId: "G-FZMJ6Q31KB"
 };
 const FIREBASE_CONFIGURED = firebaseConfig.apiKey !== "YOUR_API_KEY";
 
