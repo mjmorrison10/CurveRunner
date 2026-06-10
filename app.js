@@ -26,6 +26,11 @@ let isPremium = localStorage.getItem('curveRunner_premium') !== 'false';
 let autoRouteTimeout = null;
 let navFollowMode = true;
 let suggestionTimeout = null;
+let groupTopic = null;
+let lastGroupPostTime = 0;
+let groupEventSource = null;
+let friendMarkers = {};
+let replayMode = 'speed';
 
 // Suppress harmless MapLibre tile-abort noise
 window.addEventListener('unhandledrejection', (e) => {
@@ -368,6 +373,17 @@ function initUI() {
   document.getElementById('btn-replay-elevation').addEventListener('click', () => {
     if (replayState && replayState.ride) showElevationModalForRide(replayState.ride);
   });
+  document.getElementById('btn-weather').addEventListener('click', () => showWeatherModalForRoute());
+  document.getElementById('btn-group-share').addEventListener('click', showGroupModal);
+  document.getElementById('btn-copy-group-link').addEventListener('click', copyGroupLink);
+  document.getElementById('btn-stop-group').addEventListener('click', stopGroupRideSharing);
+  document.getElementById('btn-photo').addEventListener('click', dropPhotoWaypoint);
+  document.getElementById('photo-capture').addEventListener('change', handlePhotoCapture);
+  document.getElementById('btn-replay-lean').addEventListener('click', toggleReplayLeanMode);
+  document.getElementById('btn-replay-curves').addEventListener('click', () => {
+    if (replayState && replayState.ride && replayState.ride.curves) showCurveModal(replayState.ride.curves);
+    else showToast('No curve data for this ride');
+  });
 
   initPanelDrag();
 
@@ -421,6 +437,16 @@ function initUI() {
   } else {
     window.addEventListener('deviceorientation', handleOrientation);
     window.addEventListener('devicemotion', handleMotion);
+  }
+
+  // Check for group ride URL param
+  const urlParams = new URLSearchParams(window.location.search);
+  const groupTopic = urlParams.get('group');
+  if (groupTopic) {
+    setTimeout(() => {
+      subscribeGroupRide(groupTopic);
+      showToast('Joining group ride...');
+    }, 1200);
   }
 }
 
@@ -1311,13 +1337,14 @@ async function startRide() {
   map.easeTo({ center: userCoords, zoom: 18, duration: 600 });
 
   isRiding = true;
-  rideData = { points: [], distance: 0, startTime: Date.now(), maxLean: 0, maxSpeed: 0 };
+  rideData = { points: [], distance: 0, startTime: Date.now(), maxLean: 0, maxSpeed: 0, photos: [] };
   announceState = {};
 
   document.getElementById('btn-start-ride').classList.add('hidden');
   document.getElementById('btn-stop-ride').classList.remove('hidden');
   document.getElementById('btn-cancel-ride').classList.remove('hidden');
   document.getElementById('ride-hud').classList.remove('hidden');
+  document.getElementById('ride-actions').classList.remove('hidden');
   document.getElementById('warning-banner').classList.remove('hidden');
   document.getElementById('bottom-panel').classList.add('collapsed');
 
@@ -1374,6 +1401,8 @@ function stopRide() {
   clearInterval(rideTimerInterval);
 
   const duration = Math.floor((Date.now() - rideData.startTime) / 1000);
+  const curves = detectCurves(rideData.points);
+  const photos = rideData.photos || [];
   const ride = {
     id: Date.now(),
     date: new Date().toISOString(),
@@ -1381,7 +1410,9 @@ function stopRide() {
     duration: duration,
     maxSpeed: rideData.maxSpeed,
     maxLean: rideData.maxLean,
-    points: rideData.points
+    points: rideData.points,
+    curves: curves,
+    photos: photos
   };
 
   saveRide(ride);
@@ -1391,11 +1422,13 @@ function stopRide() {
   document.getElementById('btn-stop-ride').classList.add('hidden');
   document.getElementById('btn-cancel-ride').classList.add('hidden');
   document.getElementById('ride-hud').classList.add('hidden');
+  document.getElementById('ride-actions').classList.add('hidden');
   document.getElementById('warning-banner').classList.add('hidden');
   document.getElementById('bottom-panel').classList.remove('collapsed');
   document.getElementById('nav-banner').classList.add('hidden');
   document.getElementById('nav-mode-toggle').classList.add('hidden');
 
+  stopGroupRideSharing();
   nextStepIdx = 0;
   navFollowMode = true;
   announceState = {};
@@ -1411,11 +1444,13 @@ function cancelRide() {
   document.getElementById('btn-cancel-ride').classList.add('hidden');
   document.getElementById('btn-start-ride').classList.remove('hidden');
   document.getElementById('ride-hud').classList.add('hidden');
+  document.getElementById('ride-actions').classList.add('hidden');
   document.getElementById('warning-banner').classList.add('hidden');
   document.getElementById('nav-banner').classList.add('hidden');
   document.getElementById('nav-mode-toggle').classList.add('hidden');
   document.getElementById('bottom-panel').classList.remove('collapsed');
 
+  stopGroupRideSharing();
   // Clear route line from map but keep waypoints for replanning
   map.getSource(ROUTE_SOURCE).setData({ type: 'Feature', geometry: { type: 'LineString', coordinates: [] } });
   currentRoute = null;
@@ -1461,6 +1496,15 @@ function handleRidePosition(position) {
       centerOptions.bearing = position.coords.heading;
     }
     map.easeTo(centerOptions);
+  }
+
+  // Post to group ride if sharing (throttle to 10s)
+  if (groupTopic) {
+    const now = Date.now();
+    if (now - lastGroupPostTime > 10000) {
+      lastGroupPostTime = now;
+      postGroupPosition(groupTopic, coords[0], coords[1], speedKmh);
+    }
   }
 
   updateNav(position);
@@ -1699,8 +1743,16 @@ function loadHistory() {
       const date = new Date(r.date).toLocaleDateString();
       const durMin = Math.floor(r.duration / 60);
       const durSec = (r.duration % 60).toString().padStart(2, '0');
-      li.innerHTML = `<div class="info"><div class="date">${date}</div><div class="stats">${r.distance.toFixed(1)} km · ${durMin}:${durSec} · max ${Math.round(r.maxSpeed)} km/h · lean ${Math.round(r.maxLean)}°</div></div><div class="ride-actions"><button class="btn-small btn-secondary export-btn">GPX</button><button class="btn-small btn-primary replay-btn">▶</button></div>`;
+      const curvesCount = r.curves && r.curves.length ? r.curves.length : 0;
+      const photosCount = r.photos && r.photos.length ? r.photos.length : 0;
+      li.innerHTML = `<div class="info"><div class="date">${date}</div><div class="stats">${r.distance.toFixed(1)} km · ${durMin}:${durSec} · max ${Math.round(r.maxSpeed)} km/h · lean ${Math.round(r.maxLean)}°${curvesCount ? ' · ' + curvesCount + ' curves' : ''}${photosCount ? ' · ' + photosCount + ' 📷' : ''}</div></div><div class="ride-actions"><button class="btn-small btn-secondary export-btn">GPX</button>${curvesCount ? '<button class="btn-small btn-secondary curves-btn">🏆</button>' : ''}${photosCount ? '<button class="btn-small btn-secondary photos-btn">📷</button>' : ''}<button class="btn-small btn-primary replay-btn">▶</button></div>`;
       li.querySelector('.export-btn').addEventListener('click', () => exportRideGPX(r.id));
+      if (curvesCount) {
+        li.querySelector('.curves-btn').addEventListener('click', () => showCurveModal(r.curves));
+      }
+      if (photosCount) {
+        li.querySelector('.photos-btn').addEventListener('click', () => showPhotosModal(r.photos));
+      }
       li.querySelector('.replay-btn').addEventListener('click', () => startReplay(r));
       list.appendChild(li);
     });
@@ -1990,28 +2042,59 @@ function startReplay(ride) {
   document.getElementById('replay-title').textContent = 'Ride Replay – ' + new Date(ride.date).toLocaleDateString();
   updateReplayUI(0);
   playReplay();
+
+  // Add photo markers
+  showPhotoMarkers(ride.photos || []);
+
+  // Reset replay mode to speed
+  replayMode = 'speed';
+  document.getElementById('btn-replay-lean').classList.remove('active');
+  document.getElementById('btn-replay-lean').style.background = '';
 }
 
 function buildReplaySegments(points) {
-  const speeds = points.map(p => p.speed || 0);
-  const maxSpeed = Math.max(...speeds, 1);
+  const mode = replayMode || 'speed';
   const features = [];
-  for (let i = 0; i < points.length - 1; i++) {
-    const p1 = points[i];
-    const p2 = points[i + 1];
-    const avgSpeed = ((p1.speed || 0) + (p2.speed || 0)) / 2;
-    const color = speedToColor(avgSpeed, maxSpeed);
-    features.push({
-      type: 'Feature',
-      properties: { color, speed: avgSpeed },
-      geometry: {
-        type: 'LineString',
-        coordinates: [
-          [p1.lon !== undefined ? p1.lon : p1[0], p1.lat !== undefined ? p1.lat : p1[1]],
-          [p2.lon !== undefined ? p2.lon : p2[0], p2.lat !== undefined ? p2.lat : p2[1]]
-        ]
-      }
-    });
+  if (mode === 'lean') {
+    const leans = points.map(p => Math.abs(p.lean || 0));
+    const maxLean = Math.max(...leans, 1);
+    for (let i = 0; i < points.length - 1; i++) {
+      const p1 = points[i];
+      const p2 = points[i + 1];
+      const avgLean = (Math.abs(p1.lean || 0) + Math.abs(p2.lean || 0)) / 2;
+      const color = leanToColor(avgLean, maxLean);
+      features.push({
+        type: 'Feature',
+        properties: { color, lean: avgLean },
+        geometry: {
+          type: 'LineString',
+          coordinates: [
+            [p1.lon !== undefined ? p1.lon : p1[0], p1.lat !== undefined ? p1.lat : p1[1]],
+            [p2.lon !== undefined ? p2.lon : p2[0], p2.lat !== undefined ? p2.lat : p2[1]]
+          ]
+        }
+      });
+    }
+  } else {
+    const speeds = points.map(p => p.speed || 0);
+    const maxSpeed = Math.max(...speeds, 1);
+    for (let i = 0; i < points.length - 1; i++) {
+      const p1 = points[i];
+      const p2 = points[i + 1];
+      const avgSpeed = ((p1.speed || 0) + (p2.speed || 0)) / 2;
+      const color = speedToColor(avgSpeed, maxSpeed);
+      features.push({
+        type: 'Feature',
+        properties: { color, speed: avgSpeed },
+        geometry: {
+          type: 'LineString',
+          coordinates: [
+            [p1.lon !== undefined ? p1.lon : p1[0], p1.lat !== undefined ? p1.lat : p1[1]],
+            [p2.lon !== undefined ? p2.lon : p2[0], p2.lat !== undefined ? p2.lat : p2[1]]
+          ]
+        }
+      });
+    }
   }
   return features;
 }
@@ -2161,6 +2244,7 @@ function stopReplay() {
   if (map.getSource('replay-track')) {
     map.getSource('replay-track').setData({ type: 'FeatureCollection', features: [] });
   }
+  clearPhotoMarkers();
   document.getElementById('replay-overlay').classList.add('hidden');
   document.getElementById('top-bar').classList.remove('hidden');
   document.getElementById('bottom-panel').classList.remove('hidden');
@@ -2264,4 +2348,347 @@ function showToast(msg) {
     toast.style.transition = 'opacity 0.5s';
     setTimeout(() => toast.remove(), 500);
   }, 3000);
+}
+
+function toggleReplayLeanMode() {
+  replayMode = replayMode === 'lean' ? 'speed' : 'lean';
+  const btn = document.getElementById('btn-replay-lean');
+  if (replayMode === 'lean') {
+    btn.classList.add('active');
+    btn.style.background = 'var(--accent)';
+    showToast('Lean heatmap mode');
+  } else {
+    btn.classList.remove('active');
+    btn.style.background = '';
+    showToast('Speed heatmap mode');
+  }
+  if (replayState && replayState.ride) {
+    const segments = buildReplaySegments(replayState.ride.points);
+    if (map.getSource('replay-track')) {
+      map.getSource('replay-track').setData({ type: 'FeatureCollection', features: segments });
+    }
+  }
+}
+
+function leanToColor(lean, maxLean) {
+  const t = Math.min(lean / Math.max(maxLean, 1), 1);
+  if (t < 0.33) {
+    return `rgb(0, ${Math.round(255 * (1 - t * 3))}, 0)`;
+  } else if (t < 0.66) {
+    return `rgb(${Math.round(255 * ((t - 0.33) * 3))}, 255, 0)`;
+  } else {
+    return `rgb(255, ${Math.round(255 * (1 - (t - 0.66) * 3))}, 0)`;
+  }
+}
+
+/* ---------- Weather ---------- */
+
+async function showWeatherModalForRoute() {
+  if (!currentRoute) return showToast('No route to check weather');
+  showToast('Fetching weather...');
+  const coords = currentRoute.geometry.coordinates;
+  const sampled = samplePoints(coords, 6);
+  const cards = document.getElementById('weather-cards');
+  cards.innerHTML = '';
+
+  for (const pt of sampled) {
+    try {
+      const url = `https://api.open-meteo.com/v1/forecast?latitude=${pt[1]}&longitude=${pt[0]}&current=temperature_2m,weather_code,wind_speed_10m`;
+      const res = await fetch(url);
+      if (!res.ok) continue;
+      const data = await res.json();
+      const cur = data.current;
+      const emoji = weatherCodeToEmoji(cur.weather_code);
+      const card = document.createElement('div');
+      card.className = 'weather-card';
+      card.innerHTML = `
+        <div class="emoji">${emoji}</div>
+        <div class="info">
+          <div class="loc">${pt[1].toFixed(3)}, ${pt[0].toFixed(3)}</div>
+          <div class="temp">${Math.round(cur.temperature_2m)}°C</div>
+          <div class="detail">Wind ${Math.round(cur.wind_speed_10m)} km/h</div>
+        </div>
+      `;
+      cards.appendChild(card);
+    } catch (e) {
+      console.error('Weather fetch failed', e);
+    }
+  }
+  document.getElementById('modal-weather').querySelector('h2').textContent = 'Weather Along Route';
+  document.getElementById('modal-overlay').classList.remove('hidden');
+  document.getElementById('modal-weather').classList.remove('hidden');
+}
+
+function weatherCodeToEmoji(code) {
+  const map = {
+    0: '☀️', 1: '🌤️', 2: '⛅', 3: '☁️',
+    45: '🌫️', 48: '🌫️',
+    51: '🌦️', 53: '🌦️', 55: '🌧️',
+    61: '🌧️', 63: '🌧️', 65: '🌧️',
+    71: '🌨️', 73: '🌨️', 75: '🌨️', 77: '🌨️',
+    80: '🌦️', 81: '🌧️', 82: '🌧️',
+    95: '⛈️', 96: '⛈️', 99: '⛈️'
+  };
+  return map[code] || '🌡️';
+}
+
+/* ---------- Group Ride ---------- */
+
+function showGroupModal() {
+  document.getElementById('modal-overlay').classList.remove('hidden');
+  document.getElementById('modal-group').classList.remove('hidden');
+  const hostView = document.getElementById('group-host-view');
+  const riderView = document.getElementById('group-rider-view');
+  if (groupTopic) {
+    hostView.classList.remove('hidden');
+    riderView.classList.add('hidden');
+    const shareUrl = `${window.location.origin}${window.location.pathname}?group=${encodeURIComponent(groupTopic)}`;
+    document.getElementById('group-share-link').textContent = shareUrl;
+    document.getElementById('btn-stop-group').classList.remove('hidden');
+  } else {
+    hostView.classList.remove('hidden');
+    riderView.classList.add('hidden');
+    generateGroupTopic();
+    const shareUrl = `${window.location.origin}${window.location.pathname}?group=${encodeURIComponent(groupTopic)}`;
+    document.getElementById('group-share-link').textContent = shareUrl;
+    document.getElementById('btn-stop-group').classList.add('hidden');
+  }
+}
+
+function generateGroupTopic() {
+  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  let topic = 'curve-';
+  for (let i = 0; i < 8; i++) topic += chars.charAt(Math.floor(Math.random() * chars.length));
+  groupTopic = topic;
+  localStorage.setItem('curveRunner_groupTopic', topic);
+}
+
+function copyGroupLink() {
+  if (!groupTopic) generateGroupTopic();
+  const shareUrl = `${window.location.origin}${window.location.pathname}?group=${encodeURIComponent(groupTopic)}`;
+  navigator.clipboard.writeText(shareUrl).then(() => {
+    showToast('Link copied! Share it with your group.');
+    document.getElementById('btn-stop-group').classList.remove('hidden');
+  }).catch(() => {
+    showToast('Could not copy link');
+  });
+}
+
+function stopGroupRideSharing() {
+  if (groupEventSource) {
+    groupEventSource.close();
+    groupEventSource = null;
+  }
+  groupTopic = null;
+  localStorage.removeItem('curveRunner_groupTopic');
+  Object.values(friendMarkers).forEach(m => m.remove());
+  friendMarkers = {};
+}
+
+async function postGroupPosition(topic, lon, lat, speed) {
+  try {
+    const payload = `${lon.toFixed(6)},${lat.toFixed(6)},${Math.round(speed)}`;
+    await fetch(`https://ntfy.sh/${topic}`, { method: 'POST', body: payload });
+  } catch (e) {
+    console.error('Group post failed', e);
+  }
+}
+
+function subscribeGroupRide(topic) {
+  stopGroupRideSharing();
+  groupTopic = topic;
+  try {
+    groupEventSource = new EventSource(`https://ntfy.sh/${topic}/sse`);
+    groupEventSource.onmessage = (e) => {
+      const msg = JSON.parse(e.data);
+      handleGroupMessage(msg);
+    };
+    groupEventSource.onerror = () => {
+      console.error('Group SSE error');
+    };
+  } catch (e) {
+    console.error('Failed to subscribe to group ride', e);
+  }
+}
+
+function handleGroupMessage(msg) {
+  if (!msg || !msg.message) return;
+  const parts = msg.message.split(',');
+  if (parts.length < 2) return;
+  const lon = parseFloat(parts[0]);
+  const lat = parseFloat(parts[1]);
+  if (isNaN(lon) || isNaN(lat)) return;
+
+  const id = msg.id || 'friend';
+  if (!friendMarkers[id]) {
+    const el = document.createElement('div');
+    el.className = 'friend-dot';
+    friendMarkers[id] = new maplibregl.Marker({ element: el }).setLngLat([lon, lat]).addTo(map);
+  } else {
+    friendMarkers[id].setLngLat([lon, lat]);
+  }
+  showToast('👥 Group rider updated');
+}
+
+/* ---------- Curve Detection ---------- */
+
+function detectCurves(points) {
+  if (!points || points.length < 3) return [];
+  const curves = [];
+  for (let i = 1; i < points.length - 1; i++) {
+    const A = points[i - 1];
+    const B = points[i];
+    const C = points[i + 1];
+    const r = radiusOfCurvature(A, B, C);
+    if (r > 0 && r < 800) {
+      const avgSpeed = ((A.speed || 0) + (B.speed || 0) + (C.speed || 0)) / 3;
+      const maxLean = Math.max(Math.abs(A.lean || 0), Math.abs(B.lean || 0), Math.abs(C.lean || 0));
+      let score = (800 / r) * (avgSpeed / 60) * (maxLean / 30);
+      score = Math.min(10, Math.max(1, score * 5));
+      curves.push({
+        index: i,
+        radius: Math.round(r),
+        avgSpeed: Math.round(avgSpeed),
+        maxLean: Math.round(maxLean),
+        score: score.toFixed(1)
+      });
+    }
+  }
+  // Sort by score descending, keep top 20
+  curves.sort((a, b) => parseFloat(b.score) - parseFloat(a.score));
+  return curves.slice(0, 20);
+}
+
+function radiusOfCurvature(A, B, C) {
+  const lon1 = A.lon !== undefined ? A.lon : A[0];
+  const lat1 = A.lat !== undefined ? A.lat : A[1];
+  const lon2 = B.lon !== undefined ? B.lon : B[0];
+  const lat2 = B.lat !== undefined ? B.lat : B[1];
+  const lon3 = C.lon !== undefined ? C.lon : C[0];
+  const lat3 = C.lat !== undefined ? C.lat : C[1];
+
+  // Convert to local meters using equirectangular approximation
+  const scale = Math.cos(((lat1 + lat2 + lat3) / 3) * Math.PI / 180) * 111320;
+  const x1 = lon1 * scale, y1 = lat1 * 111320;
+  const x2 = lon2 * scale, y2 = lat2 * 111320;
+  const x3 = lon3 * scale, y3 = lat3 * 111320;
+
+  const a = Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
+  const b = Math.sqrt((x3 - x2) ** 2 + (y3 - y2) ** 2);
+  const c = Math.sqrt((x3 - x1) ** 2 + (y3 - y1) ** 2);
+
+  const area = 0.5 * Math.abs((x2 - x1) * (y3 - y1) - (x3 - x1) * (y2 - y1));
+  if (area < 1e-6) return Infinity;
+  return (a * b * c) / (4 * area);
+}
+
+function showCurveModal(curves) {
+  const list = document.getElementById('curves-list');
+  list.innerHTML = '';
+  if (!curves || !curves.length) {
+    list.innerHTML = '<p style="color:var(--text-dim)">No significant curves detected.</p>';
+  } else {
+    curves.forEach((c, i) => {
+      const item = document.createElement('div');
+      item.className = 'curve-item';
+      item.innerHTML = `
+        <div class="score-row">
+          <span class="score">${c.score}/10</span>
+          <span style="font-size:0.85rem;color:var(--text-dim)">#${i + 1}</span>
+        </div>
+        <div class="meta">
+          Radius ${c.radius}m · Speed ${c.avgSpeed} km/h · Lean ${c.maxLean}°
+        </div>
+      `;
+      list.appendChild(item);
+    });
+  }
+  document.getElementById('modal-overlay').classList.remove('hidden');
+  document.getElementById('modal-curves').classList.remove('hidden');
+}
+
+/* ---------- Photo Waypoints ---------- */
+
+let photoMarkers = [];
+
+function dropPhotoWaypoint() {
+  if (!isRiding) return showToast('Start a ride to drop photos');
+  document.getElementById('photo-capture').click();
+}
+
+function handlePhotoCapture(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    const dataUrl = ev.target.result;
+    if (!rideData.photos) rideData.photos = [];
+    const lastPoint = rideData.points[rideData.points.length - 1];
+    if (!lastPoint) return;
+    rideData.photos.push({
+      lon: lastPoint.lon,
+      lat: lastPoint.lat,
+      dataUrl: dataUrl,
+      time: Date.now()
+    });
+    showToast('Photo dropped! 📷');
+    speak('Photo saved');
+  };
+  reader.readAsDataURL(file);
+  e.target.value = '';
+}
+
+function showPhotoMarkers(photos) {
+  clearPhotoMarkers();
+  photos.forEach(p => {
+    const el = document.createElement('div');
+    el.className = 'photo-marker';
+    el.textContent = '📷';
+    el.addEventListener('click', () => {
+      const img = document.createElement('img');
+      img.src = p.dataUrl;
+      img.style.cssText = 'max-width:100%;border-radius:12px;margin-bottom:10px;';
+      const container = document.createElement('div');
+      container.appendChild(img);
+      const modal = document.createElement('div');
+      modal.style.cssText = 'position:fixed;inset:0;z-index:60;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;padding:20px;';
+      modal.appendChild(container);
+      modal.addEventListener('click', () => modal.remove());
+      document.body.appendChild(modal);
+    });
+    const marker = new maplibregl.Marker({ element: el }).setLngLat([p.lon, p.lat]).addTo(map);
+    photoMarkers.push(marker);
+  });
+}
+
+function clearPhotoMarkers() {
+  photoMarkers.forEach(m => m.remove());
+  photoMarkers = [];
+}
+
+function showPhotosModal(photos) {
+  const grid = document.getElementById('photos-grid');
+  grid.innerHTML = '';
+  if (!photos || !photos.length) {
+    grid.innerHTML = '<p style="color:var(--text-dim)">No photos for this ride.</p>';
+  } else {
+    photos.forEach(p => {
+      const img = document.createElement('img');
+      img.src = p.dataUrl;
+      img.className = 'photo-thumb';
+      img.addEventListener('click', () => {
+        const modal = document.createElement('div');
+        modal.style.cssText = 'position:fixed;inset:0;z-index:60;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;padding:20px;';
+        const fullImg = document.createElement('img');
+        fullImg.src = p.dataUrl;
+        fullImg.style.cssText = 'max-width:100%;max-height:90vh;border-radius:12px;';
+        modal.appendChild(fullImg);
+        modal.addEventListener('click', () => modal.remove());
+        document.body.appendChild(modal);
+      });
+      grid.appendChild(img);
+    });
+  }
+  document.getElementById('modal-overlay').classList.remove('hidden');
+  document.getElementById('modal-photos').classList.remove('hidden');
 }

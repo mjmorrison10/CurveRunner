@@ -45,6 +45,11 @@
       <div class="hud-item"><span id="hud-time">00:00</span><small>Time</small></div>
     </div>
 
+    <div id="ride-actions" class="hidden">
+      <button id="btn-photo" class="icon-btn" title="Drop Photo">📷</button>
+      <button id="btn-group-share" class="icon-btn" title="Share Group Ride">👥</button>
+    </div>
+
     <div id="nav-mode-toggle" class="hidden">
       <button id="btn-nav-follow" class="active" title="Follow me">📍</button>
       <button id="btn-nav-overview" title="See whole route">🗺️</button>
@@ -102,6 +107,7 @@
 
       <div class="row-btns" style="margin-top:10px">
         <button id="btn-elevation" class="btn-secondary hidden">📈 Elevation</button>
+        <button id="btn-weather" class="btn-secondary hidden">🌤️ Weather</button>
       </div>
       <div class="row-btns" style="margin-top:14px">
         <button id="btn-start-ride" class="btn-action hidden">▶ Start Ride</button>
@@ -119,6 +125,8 @@
         <span id="replay-title">Ride Replay</span>
         <div style="display:flex;gap:8px">
           <button id="btn-replay-elevation" class="icon-btn" title="Elevation">📈</button>
+          <button id="btn-replay-lean" class="icon-btn" title="Lean Heatmap">🏍️</button>
+          <button id="btn-replay-curves" class="icon-btn" title="Curve Scores">🏆</button>
           <button id="replay-close" class="icon-btn">✕</button>
         </div>
       </div>
@@ -161,6 +169,12 @@
     <div class="row-btns"><button class="btn-secondary close-modal">Close</button></div>
   </div>
 
+  <div id="modal-weather" class="modal hidden">
+    <h2>Weather Along Route</h2>
+    <div id="weather-cards" style="max-height:50vh;overflow-y:auto;"></div>
+    <div class="row-btns"><button class="btn-secondary close-modal">Close</button></div>
+  </div>
+
   <div id="modal-settings" class="modal hidden">
     <h2>Settings & Tools</h2>
     <div class="row-btns" style="margin-bottom:10px">
@@ -176,6 +190,38 @@
     </div>
     <div class="row-btns"><button class="btn-secondary close-modal">Close</button></div>
   </div>
+
+  <div id="modal-group" class="modal hidden">
+    <h2>Group Ride</h2>
+    <div id="group-rider-view" class="hidden">
+      <p style="font-size:0.9rem;color:var(--text-dim);margin-bottom:12px">👥 Watching live group ride. Waiting for position updates...</p>
+      <div id="group-riders-list" style="margin-bottom:14px"></div>
+      <div class="row-btns"><button class="btn-secondary close-modal">Close</button></div>
+    </div>
+    <div id="group-host-view">
+      <p style="font-size:0.9rem;color:var(--text-dim);margin-bottom:12px">Share this link with your riding group so they can follow you live on the map.</p>
+      <div id="group-share-link" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;font-size:0.85rem;word-break:break-all;margin-bottom:12px;color:var(--text)"></div>
+      <div class="row-btns">
+        <button id="btn-copy-group-link" class="btn-primary">Copy Link</button>
+        <button id="btn-stop-group" class="btn-danger hidden">Stop Sharing</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="modal-curves" class="modal hidden">
+    <h2>Curve Scores</h2>
+    <p style="font-size:0.85rem;color:var(--text-dim);margin-bottom:10px">Top corners ranked by radius, speed, and lean angle.</p>
+    <div id="curves-list" style="max-height:50vh;overflow-y:auto;"></div>
+    <div class="row-btns"><button class="btn-secondary close-modal">Close</button></div>
+  </div>
+
+  <div id="modal-photos" class="modal hidden">
+    <h2>Ride Photos</h2>
+    <div id="photos-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;max-height:50vh;overflow-y:auto;"></div>
+    <div class="row-btns"><button class="btn-secondary close-modal">Close</button></div>
+  </div>
+
+  <input type="file" id="photo-capture" accept="image/*" capture="environment" class="hidden">
 
   <script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
   <script src="app.js"></script>

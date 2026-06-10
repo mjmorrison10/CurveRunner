@@ -10,13 +10,13 @@
 - **Auto-locate** on first app load — centers map on your GPS position automatically
 - **Save & restore map view** — remembers last zoom, pan, and position between sessions
 - **Named waypoints** — waypoints are labeled with their real-world location (reverse geocoded) instead of generic "Point 1, Point 2"
-- **Autocomplete location search** — as you type "High" or "Cypr", the app queries Nominatim using your current map view and suggests "Highland, CA", "Cypress, CA", etc. Tapping a suggestion fills the input and locks in the exact coordinates
 - **Straight-line preview** — dashed orange lines between waypoints so you can plan the shape
 - **Manual "Route Through Points"** — one-click calculation of the actual road route through all waypoints
 - **Up to 3 waypoints** for road routing — add more points, but road routing stops at 3 until you upgrade
 - **Voice navigation** — turn-by-turn speech prompts piped to your Bluetooth helmet
 - **Draggable bottom panel** — grab the handle to resize the panel up and down with your finger or mouse
 - **GPX import/export** — bring in routes from other apps, export your planned routes
+- **Autocomplete location search** — as you type "High" or "Cypr", the app queries nearby locations and suggests "Highland, CA", "Cypress, CA", etc.
 
 ### Ride Recording
 - **Live ride HUD** — speed, lean angle, distance, timer
@@ -39,25 +39,31 @@
 - **Cancel navigation** — a "Cancel Navigation" button appears during any ride so you can abort turn-by-turn guidance and return to planning without saving a ride record
 
 ### Advanced Waypoint Routing
-- **Route from current location** — in Waypoint mode, tapping "Start Ride" automatically routes from your live GPS position to the first waypoint, then through all remaining points. No need to manually set a start point
 - **Unlimited waypoints** — no 3-waypoint cap; route through as many points as you want
 - **Auto-routing through all waypoints** — the actual road route is automatically calculated and displayed through every waypoint as you add them
 - **Auto-updating route** — drag a marker, add a point, or reorder waypoints and the road route recalculates in real-time (no button presses)
 - **Multi-leg route display** — see the full continuous road route from start through every intermediate waypoint to the destination
 - **Reorder animations** — markers flash and pulse when you move them up/down so you know the change took effect
 - **Intelligent route discovery** — the app automatically tests multiple curviness levels and finds all distinct available routes, then presents them as named options (Straight path, Least curves, Curvy, More curvy, Even more curvy, Maximum curvy, etc.) instead of a confusing slider
+- **Route from current location** — in Waypoint mode, tapping "Start Ride" automatically routes from your live GPS position to the first waypoint, then through all remaining points. No need to manually set a start point
 
 ### Ride Analysis
 - **Ride replay** — watch your recorded ride on the map with a speed color-coded route (green = slow, red = fast)
 - **Scrubber & playback controls** — drag through the ride, play at 1x/2x/4x speed
+- **Lean angle heatmap** — replay your ride colored by how hard you leaned in each corner (green = gentle, red = aggressive). Toggle between speed and lean views
 - **Elevation profile** — chart of hills and climbs for any route or recorded ride with total climb, descent, max grade, and min/max elevation
+- **Curve detection & scoring** — automatically scores every corner on your ride (1–10) based on radius, speed, and lean angle. View the top 20 curves in a ranked list
+- **Photo waypoint drops** — tap the camera button mid-ride to snap a geotagged photo. Photos appear as markers on the replay map and in a gallery in your ride history
+- **Weather along route** — fetch current weather (temperature, conditions, wind) for sampled points along your planned route using Open-Meteo
+
+### Group Ride Tracking
+- **Live group ride sharing** — tap the 👥 button during a ride to generate a shareable link. The app posts your live GPS position every 10 seconds via ntfy.sh (free, no API key)
+- **Friends watch your dot** — anyone who opens the shared link sees your live position on their map as a green dot
+- **No account needed** — just share the link and ride. No backend server required.
 
 ### Coming Soon to Premium
-- Weather along route
-- Group ride tracking (live dot sharing)
-- Lean angle heatmap on recorded routes
-- Curve detection & scoring algorithm
-- Photo waypoint drops
+- Additional route styles (scenic, fastest, etc.)
+- Export to Scenic / Calimoto formats
 
 ---
 
