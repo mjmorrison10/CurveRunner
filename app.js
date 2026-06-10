@@ -34,6 +34,15 @@ let replayMode = 'speed';
 let mapBearingMode = 'north'; // 'north' or 'heading'
 let deviceOrientationHeading = 0;
 
+// Pocket Mode Calibration
+let pocketCalibration = null;
+let pocketCalibrationTimer = null;
+let calibrationCountdownValue = 0;
+let calibrationSampleInterval = null;
+let calibrationSamples = [];
+let lastRawGamma = 0, lastRawBeta = 0, lastRawAlpha = 0;
+let lastRawAx = 0, lastRawAy = 0, lastRawAz = 0;
+
 // ============================================
 // FIREBASE CONFIG — Replace with your own values from
 // https://console.firebase.google.com → Project Settings → Your apps
@@ -68,6 +77,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     initMap();
     initUI();
     loadHistory();
+    loadPocketCalibration();
     initFirebase();
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('sw.js').then(reg => {
@@ -410,6 +420,29 @@ function initUI() {
     else showToast('No curve data for this ride');
   });
 
+  // Pocket mode listeners
+  document.getElementById('btn-pocket').addEventListener('click', showPocketCalibrateModal);
+  document.getElementById('btn-start-calibrate').addEventListener('click', startPocketCalibration);
+  document.getElementById('btn-cancel-calibrate').addEventListener('click', cancelPocketCalibration);
+  document.getElementById('btn-settings-pocket-calibrate').addEventListener('click', () => {
+    document.querySelectorAll('.modal').forEach(m => m.classList.add('hidden'));
+    document.getElementById('modal-overlay').classList.add('hidden');
+    showPocketCalibrateModal();
+  });
+  document.getElementById('btn-settings-pocket-disable').addEventListener('click', disablePocketMode);
+  document.querySelectorAll('.delay-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.delay-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+    });
+  });
+  document.getElementById('pocket-hide-warning').addEventListener('change', (e) => {
+    localStorage.setItem('curveRunner_hidePocketWarning', e.target.checked);
+    if (e.target.checked) {
+      document.getElementById('pocket-warning-box').classList.add('hidden');
+    }
+  });
+
   // Welcome screen listeners
   document.getElementById('btn-google-signin')?.addEventListener('click', signInWithGoogle);
   document.getElementById('btn-email-signin')?.addEventListener('click', signInWithEmail);
@@ -463,6 +496,7 @@ function initUI() {
       try {
         const res = await DeviceOrientationEvent.requestPermission();
         if (res === 'granted') {
+          localStorage.setItem('curveRunner_motionPermission', 'granted');
           window.addEventListener('deviceorientation', handleOrientation);
           window.addEventListener('devicemotion', handleMotion);
           showToast('Sensors enabled');
@@ -1692,10 +1726,22 @@ function haversineDistance(a, b) {
 /* ---------- Sensors ---------- */
 
 function handleOrientation(e) {
-  if (e.gamma !== null) {
-    leanAngle = e.gamma;
+  lastRawGamma = e.gamma !== null ? e.gamma : 0;
+  lastRawBeta = e.beta !== null ? e.beta : 0;
+  lastRawAlpha = e.alpha !== null ? e.alpha : 0;
+
+  if (pocketCalibration && pocketCalibration.enabled) {
+    // Apply pocket calibration to compute lean angle relative to baseline
+    let calibratedGamma = lastRawGamma - pocketCalibration.baseline.gamma;
+    // Normalize to reasonable range
+    leanAngle = calibratedGamma;
+  } else {
+    if (e.gamma !== null) {
+      leanAngle = e.gamma;
+    }
   }
-  // Track compass heading for map rotation
+
+  // Track compass heading for map rotation (always use raw)
   if (e.webkitCompassHeading !== null && !isNaN(e.webkitCompassHeading)) {
     deviceOrientationHeading = e.webkitCompassHeading;
   } else if (e.alpha !== null && !isNaN(e.alpha)) {
@@ -1707,8 +1753,20 @@ function handleOrientation(e) {
 function handleMotion(e) {
   const acc = e.accelerationIncludingGravity;
   if (acc && acc.x !== null && acc.z !== null) {
-    const angle = Math.atan2(acc.x, acc.z) * (180 / Math.PI);
-    leanAngle = angle;
+    lastRawAx = acc.x;
+    lastRawAy = acc.y;
+    lastRawAz = acc.z;
+
+    if (pocketCalibration && pocketCalibration.enabled) {
+      // Calibrated motion-based lean
+      const dx = acc.x - pocketCalibration.baseline.ax;
+      const dz = acc.z - pocketCalibration.baseline.az;
+      const angle = Math.atan2(dx, dz) * (180 / Math.PI);
+      leanAngle = angle;
+    } else {
+      const angle = Math.atan2(acc.x, acc.z) * (180 / Math.PI);
+      leanAngle = angle;
+    }
   }
 }
 
@@ -2411,6 +2469,7 @@ function showHistoryModal() {
 
 function showSettingsModal() {
   loadSavedRoutes();
+  updatePocketStatusUI();
   document.getElementById('modal-overlay').classList.remove('hidden');
   document.getElementById('modal-settings').classList.remove('hidden');
 }
@@ -2603,6 +2662,206 @@ async function syncRidesFromCloud() {
     console.error('Cloud sync failed', e);
     showToast('Cloud sync failed');
   }
+}
+
+/* ---------- Pocket Mode Calibration ---------- */
+
+function loadPocketCalibration() {
+  try {
+    const saved = localStorage.getItem('curveRunner_pocketCalibration');
+    if (saved) {
+      pocketCalibration = JSON.parse(saved);
+      updatePocketStatusUI();
+    }
+  } catch (e) {
+    console.error('Failed to load pocket calibration', e);
+  }
+}
+
+function updatePocketStatusUI() {
+  const statusDiv = document.getElementById('pocket-status');
+  const calibrateBtn = document.getElementById('btn-settings-pocket-calibrate');
+  const disableBtn = document.getElementById('btn-settings-pocket-disable');
+  if (!statusDiv || !calibrateBtn || !disableBtn) return;
+
+  if (pocketCalibration && pocketCalibration.enabled) {
+    const date = new Date(pocketCalibration.calibratedAt).toLocaleString();
+    statusDiv.textContent = `📱 Calibrated at ${date}`;
+    calibrateBtn.textContent = 'Re-calibrate';
+    disableBtn.classList.remove('hidden');
+  } else {
+    statusDiv.textContent = 'Not calibrated — mount on handlebars for best accuracy';
+    calibrateBtn.textContent = 'Calibrate for Pocket';
+    disableBtn.classList.add('hidden');
+  }
+
+  // Update HUD lean label to show pocket mode indicator
+  const hudLeanLabel = document.querySelector('#hud-lean')?.closest('.hud-item')?.querySelector('small');
+  if (hudLeanLabel) {
+    hudLeanLabel.textContent = (pocketCalibration && pocketCalibration.enabled) ? 'Lean 📱' : 'Lean';
+  }
+}
+
+function showPocketCalibrateModal() {
+  if (!isPremium) {
+    showToast('Pocket Mode is a Premium feature. Upgrade to use it.');
+    return;
+  }
+
+  // Check for iOS motion permission
+  if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+    const hasPermission = localStorage.getItem('curveRunner_motionPermission') === 'granted';
+    if (!hasPermission) {
+      showToast('Please enable motion sensors first (Settings > Motion Sensors)');
+      return;
+    }
+  }
+
+  // Load saved warning preference
+  const hideWarning = localStorage.getItem('curveRunner_hidePocketWarning') === 'true';
+  const warningBox = document.getElementById('pocket-warning-box');
+  const hideCheckbox = document.getElementById('pocket-hide-warning');
+  if (warningBox && hideCheckbox) {
+    hideCheckbox.checked = hideWarning;
+    if (hideWarning) {
+      warningBox.classList.add('hidden');
+    } else {
+      warningBox.classList.remove('hidden');
+    }
+  }
+
+  document.getElementById('modal-pocket-calibrate').classList.remove('hidden');
+  document.getElementById('modal-overlay').classList.remove('hidden');
+}
+
+function startPocketCalibration() {
+  // Get selected delay
+  const activeDelayBtn = document.querySelector('.delay-btn.active');
+  const delaySeconds = activeDelayBtn ? parseInt(activeDelayBtn.dataset.delay) : 60;
+  calibrationCountdownValue = delaySeconds;
+
+  // Close modal
+  document.getElementById('modal-pocket-calibrate').classList.add('hidden');
+  document.getElementById('modal-overlay').classList.add('hidden');
+
+  // Show countdown overlay
+  const overlay = document.getElementById('pocket-countdown-overlay');
+  overlay.classList.remove('hidden');
+  document.getElementById('pocket-countdown-msg').textContent =
+    'Place your phone in your pocket and get on your motorcycle. Remain upright when calibration begins.';
+
+  // Start countdown
+  updateCalibrationCountdownUI();
+  pocketCalibrationTimer = setInterval(() => {
+    calibrationCountdownValue--;
+    updateCalibrationCountdownUI();
+
+    // Voice announcements at key moments
+    if (calibrationCountdownValue === 30) {
+      speak('30 seconds until calibration');
+    } else if (calibrationCountdownValue === 10) {
+      speak('10 seconds until calibration. Please remain upright on your motorcycle.');
+    } else if (calibrationCountdownValue === 5) {
+      speak('5 seconds');
+    } else if (calibrationCountdownValue === 0) {
+      clearInterval(pocketCalibrationTimer);
+      pocketCalibrationTimer = null;
+      beginCalibrationSampling();
+    }
+  }, 1000);
+}
+
+function updateCalibrationCountdownUI() {
+  const m = Math.floor(calibrationCountdownValue / 60);
+  const s = calibrationCountdownValue % 60;
+  const timeStr = `${m}:${s.toString().padStart(2, '0')}`;
+  document.getElementById('pocket-countdown-time').textContent = timeStr;
+}
+
+function cancelPocketCalibration() {
+  if (pocketCalibrationTimer) {
+    clearInterval(pocketCalibrationTimer);
+    pocketCalibrationTimer = null;
+  }
+  if (calibrationSampleInterval) {
+    clearInterval(calibrationSampleInterval);
+    calibrationSampleInterval = null;
+  }
+  calibrationSamples = [];
+  document.getElementById('pocket-countdown-overlay').classList.add('hidden');
+  showToast('Pocket calibration cancelled');
+}
+
+function beginCalibrationSampling() {
+  document.getElementById('pocket-countdown-msg').textContent = 'Calibration in progress... Please remain upright. Hold still for 3 seconds.';
+  speak('Calibration starting now. Please remain upright for three seconds.');
+  calibrationSamples = [];
+  let sampleCount = 0;
+  const maxSamples = 30; // 3 seconds at 100ms intervals
+
+  calibrationSampleInterval = setInterval(() => {
+    calibrationSamples.push({
+      gamma: lastRawGamma,
+      beta: lastRawBeta,
+      alpha: lastRawAlpha,
+      ax: lastRawAx,
+      ay: lastRawAy,
+      az: lastRawAz
+    });
+    sampleCount++;
+
+    if (sampleCount >= maxSamples) {
+      clearInterval(calibrationSampleInterval);
+      calibrationSampleInterval = null;
+      finishCalibration();
+    }
+  }, 100);
+}
+
+function finishCalibration() {
+  // Calculate average baseline values
+  const n = calibrationSamples.length;
+  if (n === 0) {
+    document.getElementById('pocket-countdown-overlay').classList.add('hidden');
+    showToast('Calibration failed — no sensor data. Make sure motion sensors are enabled.');
+    return;
+  }
+
+  const avg = {
+    gamma: calibrationSamples.reduce((sum, s) => sum + s.gamma, 0) / n,
+    beta: calibrationSamples.reduce((sum, s) => sum + s.beta, 0) / n,
+    alpha: calibrationSamples.reduce((sum, s) => sum + s.alpha, 0) / n,
+    ax: calibrationSamples.reduce((sum, s) => sum + s.ax, 0) / n,
+    ay: calibrationSamples.reduce((sum, s) => sum + s.ay, 0) / n,
+    az: calibrationSamples.reduce((sum, s) => sum + s.az, 0) / n
+  };
+
+  pocketCalibration = {
+    baseline: avg,
+    calibratedAt: Date.now(),
+    enabled: true
+  };
+
+  // Save to localStorage
+  try {
+    localStorage.setItem('curveRunner_pocketCalibration', JSON.stringify(pocketCalibration));
+  } catch (e) {
+    console.error('Failed to save pocket calibration', e);
+  }
+
+  document.getElementById('pocket-countdown-overlay').classList.add('hidden');
+  updatePocketStatusUI();
+
+  speak('Pocket mode calibration complete. You can now start your ride.');
+  showToast('📱 Pocket Mode calibrated! Lean angle will be measured relative to your pocket position.');
+}
+
+function disablePocketMode() {
+  pocketCalibration = null;
+  localStorage.removeItem('curveRunner_pocketCalibration');
+  updatePocketStatusUI();
+  showToast('Pocket Mode disabled. Using standard lean measurement.');
+  speak('Pocket mode disabled.');
 }
 
 function toggleReplayLeanMode() {

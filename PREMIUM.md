@@ -62,6 +62,15 @@
 - **Friends watch your dot** — anyone who opens the shared link sees your live position on their map as a green dot
 - **No account needed** — just share the link and ride. No backend server required.
 
+### Pocket Mode Calibration (🤏)
+- **Calibrate for your pocket** — keep your phone in your pocket while riding. The app measures the baseline angle of your phone in your pocket while you're upright on the motorcycle, then subtracts that baseline from every future lean reading
+- **Adjustable delay timer** — choose a 30-second, 1-minute, 2-minute, or 5-minute delay before calibration begins. Gives you time to put the phone in your pocket, get on the bike, and settle in before it starts measuring
+- **Voice countdown prompts** — the app speaks alerts at 30s, 10s, and 5s remaining, then says "Calibration starting now. Please remain upright for three seconds." Hands-free, eyes-free setup
+- **Not as accurate as a handlebar mount** — the app warns you that pocket fabric shifts, body position changes, and the phone can move. Results will vary. For the most accurate lean data, mount the phone to your handlebars with a QuadLock or RAM mount
+- **Dismissible warning** — tap "Don't show this warning again" if you already know the trade-offs and want a faster setup
+- **Re-calibrate anytime** — your body position or pocket changes? Re-calibrate from Settings or the 🤏 button in the top bar
+- **Live lean indicator** — when Pocket Mode is active, the HUD shows "Lean 📱" so you know the numbers are calibrated for your pocket
+
 ### Account & Cloud Sync
 - **Cross-device ride history** — create a free account with Google or email to back up every ride to the cloud. View your stats, replays, and photos on any phone or tablet
 - **Automatic sync** — finish a ride on one device, open the app on another, and your history appears instantly

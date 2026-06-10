@@ -663,6 +663,87 @@ input[type="checkbox"] { width: 22px; height: 22px; accent-color: var(--accent);
   word-break: break-all;
 }
 
+/* Pocket Mode */
+#pocket-countdown-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(0, 0, 0, 0.92);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  padding: 24px;
+  text-align: center;
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+}
+#pocket-countdown-overlay.hidden { display: none !important; }
+
+.countdown-content {
+  max-width: 360px;
+  width: 100%;
+}
+
+.countdown-title {
+  font-size: 1.3rem;
+  font-weight: 800;
+  color: var(--accent);
+  margin-bottom: 20px;
+}
+
+.countdown-time {
+  font-size: 4rem;
+  font-weight: 800;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 16px;
+  letter-spacing: 2px;
+}
+
+.countdown-msg {
+  font-size: 1rem;
+  color: var(--text-dim);
+  line-height: 1.5;
+  margin-bottom: 32px;
+}
+
+.delay-options .delay-btn {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 10px 4px;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.delay-options .delay-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.delay-options .delay-btn:active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.pocket-warning {
+  background: rgba(255, 68, 68, 0.08);
+  border: 1px solid rgba(255, 68, 68, 0.3);
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.pocket-lean-indicator {
+  font-size: 0.65rem;
+  color: var(--accent);
+  margin-left: 2px;
+  vertical-align: super;
+}
+
 @media (max-height: 700px) {
   #bottom-panel { max-height: 50vh; }
   .hud-item span { font-size: 1.2rem; }

@@ -68,6 +68,7 @@
         <button id="btn-offline" class="icon-btn" title="Save Offline">📴</button>
         <button id="btn-history" class="icon-btn" title="Ride History">📜</button>
         <button id="btn-settings" class="icon-btn" title="Settings">⚙️</button>
+        <button id="btn-pocket" class="icon-btn" title="Pocket Mode">🤏</button>
       </div>
     </div>
 
@@ -163,6 +164,15 @@
 
     <div id="toast-container"></div>
 
+    <div id="pocket-countdown-overlay" class="hidden">
+      <div class="countdown-content">
+        <div class="countdown-title">🤏 Pocket Mode Calibration</div>
+        <div class="countdown-time" id="pocket-countdown-time">--:--</div>
+        <div class="countdown-msg" id="pocket-countdown-msg">Place your phone in your pocket and get on your motorcycle. Remain upright when calibration begins.</div>
+        <button id="btn-cancel-calibrate" class="btn-danger">Cancel Calibration</button>
+      </div>
+    </div>
+
     <div id="replay-overlay" class="hidden">
       <div id="replay-header">
         <span id="replay-title">Ride Replay</span>
@@ -237,6 +247,12 @@
       <button id="btn-settings-signin" class="btn-primary">Sign In / Create Account</button>
       <button id="btn-settings-signout" class="btn-secondary hidden">Sign Out</button>
     </div>
+    <div style="margin-bottom:14px" id="settings-pocket-section">
+      <p style="margin-bottom:6px;font-size:0.85rem;color:var(--text-dim)">Pocket Mode</p>
+      <div id="pocket-status" style="font-size:0.85rem;color:var(--text);margin-bottom:8px;">Not calibrated</div>
+      <button id="btn-settings-pocket-calibrate" class="btn-primary">Calibrate for Pocket</button>
+      <button id="btn-settings-pocket-disable" class="btn-secondary hidden">Disable Pocket Mode</button>
+    </div>
     <div class="row-btns"><button class="btn-secondary close-modal">Close</button></div>
   </div>
 
@@ -254,6 +270,31 @@
         <button id="btn-copy-group-link" class="btn-primary">Copy Link</button>
         <button id="btn-stop-group" class="btn-danger hidden">Stop Sharing</button>
       </div>
+    </div>
+  </div>
+
+  <div id="modal-pocket-calibrate" class="modal hidden">
+    <h2>🤏 Pocket Mode Calibration</h2>
+    <div class="pocket-warning" id="pocket-warning-box">
+      <p style="font-size:0.85rem;color:var(--text);line-height:1.4;margin-bottom:10px">
+        ⚠️ <strong>Important:</strong> Pocket Mode is not as accurate as a QuadLock or RAM mount. The phone shifts in your pocket, fabric moves, and your body position changes. Results will vary. For the best lean-angle data, mount the phone to your handlebars.
+      </p>
+      <label class="avoid-label" style="margin-bottom:0">
+        <input type="checkbox" id="pocket-hide-warning"> Don't show this warning again
+      </label>
+    </div>
+    <div class="pocket-delay" style="margin-top:14px">
+      <p style="font-size:0.85rem;color:var(--text-dim);margin-bottom:8px">Choose a delay to place your phone in your pocket and get on your motorcycle:</p>
+      <div class="delay-options" style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:12px">
+        <button data-delay="30" class="btn-small delay-btn">30 sec</button>
+        <button data-delay="60" class="btn-small delay-btn active">1 min</button>
+        <button data-delay="120" class="btn-small delay-btn">2 min</button>
+        <button data-delay="300" class="btn-small delay-btn">5 min</button>
+      </div>
+    </div>
+    <div class="row-btns">
+      <button id="btn-start-calibrate" class="btn-primary">Start Calibration</button>
+      <button class="btn-secondary close-modal">Cancel</button>
     </div>
   </div>
 
