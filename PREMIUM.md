@@ -10,6 +10,7 @@
 - **Auto-locate** on first app load — centers map on your GPS position automatically
 - **Save & restore map view** — remembers last zoom, pan, and position between sessions
 - **Named waypoints** — waypoints are labeled with their real-world location (reverse geocoded) instead of generic "Point 1, Point 2"
+- **Autocomplete location search** — as you type "High" or "Cypr", the app queries Nominatim using your current map view and suggests "Highland, CA", "Cypress, CA", etc. Tapping a suggestion fills the input and locks in the exact coordinates
 - **Straight-line preview** — dashed orange lines between waypoints so you can plan the shape
 - **Manual "Route Through Points"** — one-click calculation of the actual road route through all waypoints
 - **Up to 3 waypoints** for road routing — add more points, but road routing stops at 3 until you upgrade
@@ -35,8 +36,10 @@
   - **📍 Follow mode** — map smoothly centers on your live GPS position, rotates to your heading, and zooms in so you can see upcoming turns
   - **🗺️ Overview mode** — map zooms out to show the entire route at a glance; tap 📍 to snap back to follow mode
 - **Dynamic turn re-snap** — if you skip a turn or take a detour, the app recalculates which maneuver you're closest to every GPS tick and resumes guidance from the next upcoming turn
+- **Cancel navigation** — a "Cancel Navigation" button appears during any ride so you can abort turn-by-turn guidance and return to planning without saving a ride record
 
 ### Advanced Waypoint Routing
+- **Route from current location** — in Waypoint mode, tapping "Start Ride" automatically routes from your live GPS position to the first waypoint, then through all remaining points. No need to manually set a start point
 - **Unlimited waypoints** — no 3-waypoint cap; route through as many points as you want
 - **Auto-routing through all waypoints** — the actual road route is automatically calculated and displayed through every waypoint as you add them
 - **Auto-updating route** — drag a marker, add a point, or reorder waypoints and the road route recalculates in real-time (no button presses)

@@ -185,6 +185,32 @@ input[type="checkbox"] { width: 22px; height: 22px; accent-color: var(--accent);
   width: 18px; height: 18px; accent-color: var(--accent);
 }
 
+.suggestions-list {
+  list-style: none;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  max-height: 180px;
+  overflow-y: auto;
+  margin: -6px 0 10px 0;
+  z-index: 15;
+}
+.suggestions-list li {
+  padding: 10px 12px;
+  font-size: 0.9rem;
+  color: var(--text);
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+}
+.suggestions-list li:last-child {
+  border-bottom: none;
+}
+.suggestions-list li:active,
+.suggestions-list li:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
 .route-options-container {
   margin-bottom: 12px;
 }

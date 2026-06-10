@@ -25,6 +25,7 @@ let db = null;
 let isPremium = localStorage.getItem('curveRunner_premium') !== 'false';
 let autoRouteTimeout = null;
 let navFollowMode = true;
+let suggestionTimeout = null;
 
 // Suppress harmless MapLibre tile-abort noise
 window.addEventListener('unhandledrejection', (e) => {
@@ -303,6 +304,32 @@ function initUI() {
 
   // curviness sliders removed — route discovery is now automatic
 
+  // Autocomplete for location inputs
+  const startInput = document.getElementById('search-start');
+  const endInput = document.getElementById('search-end');
+  [startInput, endInput].forEach(input => {
+    input.addEventListener('input', () => {
+      delete input.dataset.lon;
+      delete input.dataset.lat;
+      const val = input.value.trim();
+      if (val.length < 2) {
+        hideSuggestions(input.id === 'search-start' ? 'suggestions-start' : 'suggestions-end');
+        return;
+      }
+      if (suggestionTimeout) clearTimeout(suggestionTimeout);
+      suggestionTimeout = setTimeout(() => fetchSuggestions(val, input.id), 250);
+    });
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('#suggestions-start') && !e.target.closest('#search-start')) {
+      hideSuggestions('suggestions-start');
+    }
+    if (!e.target.closest('#suggestions-end') && !e.target.closest('#search-end')) {
+      hideSuggestions('suggestions-end');
+    }
+  });
+
   // Auto-recalculate when avoidance toggles change (if a route exists)
   ['avoid-freeways', 'avoid-tolls', 'avoid-dirt', 'avoid-ferry'].forEach(id => {
     document.getElementById(id)?.addEventListener('change', () => {
@@ -337,6 +364,7 @@ function initUI() {
   document.getElementById('btn-elevation').addEventListener('click', () => showElevationModalForRoute());
   document.getElementById('btn-nav-follow').addEventListener('click', () => toggleNavMode('follow'));
   document.getElementById('btn-nav-overview').addEventListener('click', () => toggleNavMode('overview'));
+  document.getElementById('btn-cancel-ride').addEventListener('click', cancelRide);
   document.getElementById('btn-replay-elevation').addEventListener('click', () => {
     if (replayState && replayState.ride) showElevationModalForRide(replayState.ride);
   });
@@ -483,6 +511,51 @@ async function useCurrentLocationAsStart() {
   } catch (e) {
     showToast(geolocationErrorMessage(e));
   }
+}
+
+/* ---------- Autocomplete ---------- */
+
+async function fetchSuggestions(query, inputId) {
+  const listId = inputId === 'search-start' ? 'suggestions-start' : 'suggestions-end';
+  const list = document.getElementById(listId);
+  if (!list) return;
+
+  try {
+    const bounds = map.getBounds();
+    const viewbox = `${bounds.getWest()},${bounds.getNorth()},${bounds.getEast()},${bounds.getSouth()}`;
+    const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=5&viewbox=${viewbox}&accept-language=en`;
+    const res = await fetch(url, { headers: { 'User-Agent': 'CurveRunner/1.0' } });
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!data || !data.length) {
+      list.classList.add('hidden');
+      return;
+    }
+
+    list.innerHTML = '';
+    data.forEach(item => {
+      const li = document.createElement('li');
+      let display = item.display_name;
+      if (display.length > 55) display = display.substring(0, 52) + '...';
+      li.textContent = display;
+      li.addEventListener('click', () => {
+        const input = document.getElementById(inputId);
+        input.value = item.display_name;
+        input.dataset.lon = item.lon;
+        input.dataset.lat = item.lat;
+        list.classList.add('hidden');
+      });
+      list.appendChild(li);
+    });
+    list.classList.remove('hidden');
+  } catch (e) {
+    list.classList.add('hidden');
+  }
+}
+
+function hideSuggestions(listId) {
+  const list = document.getElementById(listId);
+  if (list) list.classList.add('hidden');
 }
 
 /* ---------- Routing ---------- */
@@ -680,7 +753,7 @@ async function calculateAutoRoute() {
 
   let start;
   try {
-    if (startQuery.toLowerCase() === 'my location' && startInput.dataset.lon) {
+    if (startInput.dataset.lon && startInput.dataset.lat) {
       start = [parseFloat(startInput.dataset.lon), parseFloat(startInput.dataset.lat)];
     } else if (startQuery) {
       start = await geocode(startQuery);
@@ -693,7 +766,13 @@ async function calculateAutoRoute() {
 
   let end;
   try {
-    end = await geocode(endQuery);
+    if (endInput.dataset.lon && endInput.dataset.lat) {
+      end = [parseFloat(endInput.dataset.lon), parseFloat(endInput.dataset.lat)];
+    } else if (endQuery) {
+      end = await geocode(endQuery);
+    } else {
+      return showToast('Enter a destination');
+    }
   } catch (e) {
     return showToast('Destination error: ' + e.message);
   }
@@ -1189,7 +1268,7 @@ if ('speechSynthesis' in window) {
 /* ---------- Ride Recording ---------- */
 
 async function startRide() {
-  if (!currentRoute) {
+  if (!currentRoute && (currentMode !== 'waypoints' || waypoints.length === 0)) {
     return showToast('No route to follow. Plan a route first.');
   }
 
@@ -1205,6 +1284,20 @@ async function startRide() {
   }
 
   const userCoords = [userPos[0], userPos[1]];
+
+  // In waypoint mode, route from current location through all waypoints
+  if (currentMode === 'waypoints' && waypoints.length > 0) {
+    showToast('Routing from your location...');
+    try {
+      const costingOptions = buildCostingOptions();
+      const newRoute = await fetchRoute([userCoords, ...waypoints], costingOptions);
+      currentRoute = newRoute;
+      displayRoute(currentRoute, false);
+    } catch (e) {
+      document.getElementById('btn-start-ride').classList.remove('hidden');
+      return showToast('Routing from your location failed: ' + e.message);
+    }
+  }
 
   // Snap current GPS position to the route and find upcoming turn
   snapToRoute(userCoords);
@@ -1223,6 +1316,7 @@ async function startRide() {
 
   document.getElementById('btn-start-ride').classList.add('hidden');
   document.getElementById('btn-stop-ride').classList.remove('hidden');
+  document.getElementById('btn-cancel-ride').classList.remove('hidden');
   document.getElementById('ride-hud').classList.remove('hidden');
   document.getElementById('warning-banner').classList.remove('hidden');
   document.getElementById('bottom-panel').classList.add('collapsed');
@@ -1295,11 +1389,36 @@ function stopRide() {
 
   document.getElementById('btn-start-ride').classList.remove('hidden');
   document.getElementById('btn-stop-ride').classList.add('hidden');
+  document.getElementById('btn-cancel-ride').classList.add('hidden');
   document.getElementById('ride-hud').classList.add('hidden');
   document.getElementById('warning-banner').classList.add('hidden');
   document.getElementById('bottom-panel').classList.remove('collapsed');
   document.getElementById('nav-banner').classList.add('hidden');
   document.getElementById('nav-mode-toggle').classList.add('hidden');
+
+  nextStepIdx = 0;
+  navFollowMode = true;
+  announceState = {};
+}
+
+function cancelRide() {
+  isRiding = false;
+  if (geoWatchId !== null) navigator.geolocation.clearWatch(geoWatchId);
+  clearInterval(rideTimerInterval);
+  speak('Navigation cancelled.');
+
+  document.getElementById('btn-stop-ride').classList.add('hidden');
+  document.getElementById('btn-cancel-ride').classList.add('hidden');
+  document.getElementById('btn-start-ride').classList.remove('hidden');
+  document.getElementById('ride-hud').classList.add('hidden');
+  document.getElementById('warning-banner').classList.add('hidden');
+  document.getElementById('nav-banner').classList.add('hidden');
+  document.getElementById('nav-mode-toggle').classList.add('hidden');
+  document.getElementById('bottom-panel').classList.remove('collapsed');
+
+  // Clear route line from map but keep waypoints for replanning
+  map.getSource(ROUTE_SOURCE).setData({ type: 'Feature', geometry: { type: 'LineString', coordinates: [] } });
+  currentRoute = null;
 
   nextStepIdx = 0;
   navFollowMode = true;

@@ -58,8 +58,10 @@
       </div>
 
       <div id="panel-auto">
-        <input type="text" id="search-start" placeholder="Start location (or leave blank for GPS)">
-        <input type="text" id="search-end" placeholder="Destination">
+        <input type="text" id="search-start" placeholder="Start location (or leave blank for GPS)" autocomplete="off">
+        <ul id="suggestions-start" class="suggestions-list hidden"></ul>
+        <input type="text" id="search-end" placeholder="Destination" autocomplete="off">
+        <ul id="suggestions-end" class="suggestions-list hidden"></ul>
         <div id="route-options-auto" class="route-options-container hidden">
           <p class="hint">Choose your preferred route:</p>
           <div id="route-options-list-auto" class="route-options-list"></div>
@@ -104,6 +106,9 @@
       <div class="row-btns" style="margin-top:14px">
         <button id="btn-start-ride" class="btn-action hidden">▶ Start Ride</button>
         <button id="btn-stop-ride" class="btn-danger hidden">⏹ Stop Ride</button>
+      </div>
+      <div class="row-btns" style="margin-top:8px">
+        <button id="btn-cancel-ride" class="btn-secondary hidden">✕ Cancel Navigation</button>
       </div>
     </div>
 
