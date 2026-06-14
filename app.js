@@ -34,6 +34,12 @@ let replayMode = 'speed';
 let mapBearingMode = 'north'; // 'north' or 'heading'
 let deviceOrientationHeading = 0;
 
+// Curvy Roads Layer
+let curvyRoadsEnabled = false;
+const CURVY_ROADS_SOURCE = 'curvy-roads-source';
+const CURVY_ROADS_LAYER = 'curvy-roads-layer';
+let curvyRoadsDebounce = null;
+
 let userArrowMarker = null;
 let originalRoute = null;
 let navRoute = null;
@@ -204,8 +210,14 @@ function initMap() {
     updateUserArrow(coords, heading);
   });
 
-  map.on('moveend', saveMapView);
-  map.on('zoomend', saveMapView);
+  map.on('moveend', () => {
+    saveMapView();
+    if (curvyRoadsEnabled) debouncedUpdateCurvyRoads();
+  });
+  map.on('zoomend', () => {
+    saveMapView();
+    if (curvyRoadsEnabled) debouncedUpdateCurvyRoads();
+  });
 
   if (!saved) {
     autoLocate();
@@ -278,6 +290,9 @@ function initMap() {
       layout: { 'line-join': 'round', 'line-cap': 'round', 'visibility': 'visible' },
       paint: { 'line-color': '#00aaff', 'line-width': 5, 'line-opacity': 0.8, 'line-dasharray': [6, 4] }
     });
+
+    // Curvy Roads layer
+    addCurvyRoadsLayer();
 
     // User arrow marker
     const arrowEl = document.createElement('div');
@@ -449,6 +464,7 @@ function initUI() {
   document.getElementById('btn-weather').addEventListener('click', () => showWeatherModalForRoute());
   document.getElementById('btn-group-share').addEventListener('click', showGroupModal);
   document.getElementById('btn-copy-group-link').addEventListener('click', copyGroupLink);
+  document.getElementById('btn-curvy-roads').addEventListener('click', toggleCurvyRoads);
   document.getElementById('btn-stop-group').addEventListener('click', stopGroupRideSharing);
   document.getElementById('btn-photo').addEventListener('click', dropPhotoWaypoint);
   document.getElementById('btn-compass').addEventListener('click', toggleMapBearingMode);
@@ -3444,4 +3460,202 @@ function showPhotosModal(photos) {
   }
   document.getElementById('modal-overlay').classList.remove('hidden');
   document.getElementById('modal-photos').classList.remove('hidden');
+}
+
+/* ---------- Curvy Roads Layer ---------- */
+
+function calculateCurviness(coordinates) {
+  if (!coordinates || coordinates.length < 3) return 0;
+  
+  let totalAngleChange = 0;
+  let totalLength = 0;
+  
+  for (let i = 1; i < coordinates.length - 1; i++) {
+    const prev = coordinates[i - 1];
+    const curr = coordinates[i];
+    const next = coordinates[i + 1];
+    
+    // Calculate bearing from prev to curr
+    const bearing1 = Math.atan2(curr[0] - prev[0], curr[1] - prev[1]);
+    // Calculate bearing from curr to next
+    const bearing2 = Math.atan2(next[0] - curr[0], next[1] - curr[1]);
+    
+    // Calculate angle change in radians
+    let angleChange = Math.abs(bearing2 - bearing1);
+    if (angleChange > Math.PI) angleChange = 2 * Math.PI - angleChange;
+    
+    totalAngleChange += angleChange;
+    
+    // Calculate segment length
+    const segLength = Math.sqrt(
+      Math.pow((next[0] - prev[0]) * 111320 * Math.cos(curr[1] * Math.PI / 180), 2) +
+      Math.pow((next[1] - prev[1]) * 111320, 2)
+    );
+    totalLength += segLength;
+  }
+  
+  if (totalLength < 10) return 0;
+  // Return angular change per meter (radians per meter)
+  return totalAngleChange / totalLength;
+}
+
+async function fetchRoadsForBounds(bounds) {
+  const [west, south, east, north] = bounds;
+  
+  // Overpass QL query for highway ways within bounds
+  const query = `
+    [out:json][timeout:25];
+    (
+      way["highway"="motorway"](${south},${west},${north},${east});
+      way["highway"="trunk"](${south},${west},${north},${east});
+      way["highway"="primary"](${south},${west},${north},${east});
+      way["highway"="secondary"](${south},${west},${north},${east});
+      way["highway"="tertiary"](${south},${west},${north},${east});
+      way["highway"="residential"](${south},${west},${north},${east});
+      way["highway"="unclassified"](${south},${west},${north},${east});
+      way["highway"="service"](${south},${west},${north},${east});
+      way["highway"="track"](${south},${west},${north},${east});
+      way["highway"="path"](${south},${west},${north},${east});
+      way["highway"="cycleway"](${south},${west},${north},${east});
+      way["highway"="footway"](${south},${west},${north},${east});
+    );
+    out body;
+   >;
+    out skel qt;
+  `.trim().replace(/\s+/g, ' ');
+  
+  try {
+    const response = await fetch('https://overpass-api.de/api/interpreter', {
+      method: 'POST',
+      body: 'data=' + encodeURIComponent(query),
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+    });
+    
+    if (!response.ok) {
+      console.error('Overpass API error:', response.status);
+      return { type: 'FeatureCollection', features: [] };
+    }
+    
+    const data = await response.json();
+    
+    // Convert OSM ways to GeoJSON features
+    const features = [];
+    const nodeMap = new Map();
+    
+    // First pass: collect all nodes
+    data.elements.forEach(el => {
+      if (el.type === 'node') {
+        nodeMap.set(el.id, [el.lon, el.lat]);
+      }
+    });
+    
+    // Second pass: convert ways to LineString features with curviness
+    data.elements.forEach(el => {
+      if (el.type === 'way' && el.nodes && el.nodes.length >= 2) {
+        const coordinates = el.nodes
+          .map(nodeId => nodeMap.get(nodeId))
+          .filter(coord => coord !== undefined);
+        
+        if (coordinates.length >= 2) {
+          const curviness = calculateCurviness(coordinates);
+          features.push({
+            type: 'Feature',
+            geometry: {
+              type: 'LineString',
+              coordinates: coordinates
+            },
+            properties: {
+              curviness: curviness,
+              highway: el.tags?.highway || 'unknown'
+            }
+          });
+        }
+      }
+    });
+    
+    return { type: 'FeatureCollection', features: features };
+  } catch (e) {
+    console.error('Error fetching roads:', e);
+    return { type: 'FeatureCollection', features: [] };
+  }
+}
+
+function addCurvyRoadsLayer() {
+  if (!map.getSource(CURVY_ROADS_SOURCE)) {
+    map.addSource(CURVY_ROADS_SOURCE, {
+      type: 'geojson',
+      data: { type: 'FeatureCollection', features: [] }
+    });
+    
+    map.addLayer({
+      id: CURVY_ROADS_LAYER,
+      type: 'line',
+      source: CURVY_ROADS_SOURCE,
+      layout: {
+        'line-join': 'round',
+        'line-cap': 'round',
+        'visibility': 'none'
+      },
+      paint: {
+        'line-color': [
+          'interpolate',
+          ['linear'],
+          ['get', 'curviness'],
+          0, '#00cc66',      // Green - straight
+          0.02, '#99cc00',   // Yellow-green
+          0.05, '#ffcc00',   // Yellow
+          0.1, '#ff9900',    // Orange
+          0.2, '#ff4400',    // Red-orange
+          0.5, '#ff0000'     // Red - very twisty
+        ],
+        'line-width': 3,
+        'line-opacity': 0.8
+      }
+    });
+  }
+}
+
+async function updateCurvyRoads() {
+  if (!map || !curvyRoadsEnabled) return;
+  
+  const bounds = map.getBounds();
+  const boundsArray = [
+    bounds.getWest(),
+    bounds.getSouth(),
+    bounds.getEast(),
+    bounds.getNorth()
+  ];
+  
+  try {
+    const geojson = await fetchRoadsForBounds(boundsArray);
+    const source = map.getSource(CURVY_ROADS_SOURCE);
+    if (source) {
+      source.setData(geojson);
+    }
+  } catch (e) {
+    console.error('Error updating curvy roads:', e);
+  }
+}
+
+function debouncedUpdateCurvyRoads() {
+  if (curvyRoadsDebounce) clearTimeout(curvyRoadsDebounce);
+  curvyRoadsDebounce = setTimeout(updateCurvyRoads, 500);
+}
+
+function toggleCurvyRoads() {
+  curvyRoadsEnabled = !curvyRoadsEnabled;
+  const btn = document.getElementById('btn-curvy-roads');
+  
+  if (curvyRoadsEnabled) {
+    btn.classList.add('active');
+    if (map.getLayer(CURVY_ROADS_LAYER)) {
+      map.setLayoutProperty(CURVY_ROADS_LAYER, 'visibility', 'visible');
+    }
+    updateCurvyRoads();
+  } else {
+    btn.classList.remove('active');
+    if (map.getLayer(CURVY_ROADS_LAYER)) {
+      map.setLayoutProperty(CURVY_ROADS_LAYER, 'visibility', 'none');
+    }
+  }
 }
