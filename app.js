@@ -3702,15 +3702,20 @@ function hardRefresh() {
   }
 
   // Clear non-essential localStorage items (preserve auth-related items)
-  const keysToPreserve = [
-    'firebase:previousApiFailure', // Firebase auth state
+  const authPrefixes = [
+    'firebase:',
+    'googleapis',
+    'gapi',
+    'oauth',
+    'authuser'
   ];
   const keysToRemove = [];
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i);
-    if (key && !keysToPreserve.some(k => key.includes(k))) {
-      // Keep Firebase auth tokens and user credentials
-      if (!key.includes('firebase:') && !key.includes('googleapis')) {
+    if (key) {
+      // Preserve all Firebase/auth-related keys
+      const shouldPreserve = authPrefixes.some(prefix => key.startsWith(prefix));
+      if (!shouldPreserve) {
         keysToRemove.push(key);
       }
     }
