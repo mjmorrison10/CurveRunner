@@ -103,7 +103,8 @@ document.addEventListener('DOMContentLoaded', async () => {
           const newWorker = reg.installing;
           newWorker.addEventListener('statechange', () => {
             if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
-              showToast('Update available! Reload to get latest features.');
+              // Show modal instead of just toast for better visibility
+              showUpdateModal();
             }
           });
         });
@@ -513,6 +514,9 @@ function initUI() {
     showWelcomeScreen();
   });
   document.getElementById('btn-settings-signout')?.addEventListener('click', signOutUser);
+  document.getElementById('btn-hard-refresh')?.addEventListener('click', hardRefresh);
+  document.getElementById('btn-update-now')?.addEventListener('click', hardRefresh);
+  document.getElementById('btn-update-later')?.addEventListener('click', dismissUpdateModal);
 
   initPanelDrag();
 
@@ -3658,4 +3662,93 @@ function toggleCurvyRoads() {
       map.setLayoutProperty(CURVY_ROADS_LAYER, 'visibility', 'none');
     }
   }
+}
+
+/* ---------- Hard Refresh & Update Notification ---------- */
+
+let pendingUpdate = false;
+const UPDATE_DISMISSED_KEY = 'curveRunner_updateDismissed';
+
+function hardRefresh() {
+  showToast('Refreshing app...');
+
+  // Unregister service worker
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.getRegistration().then(registration => {
+      if (registration) {
+        registration.unregister().then(() => {
+          console.log('Service worker unregistered');
+        });
+      }
+    }).catch(err => {
+      console.error('Error unregistering service worker:', err);
+    });
+  }
+
+  // Clear all caches
+  if ('caches' in window) {
+    caches.keys().then(cacheNames => {
+      return Promise.all(
+        cacheNames.map(cacheName => {
+          console.log('Deleting cache:', cacheName);
+          return caches.delete(cacheName);
+        })
+      );
+    }).then(() => {
+      console.log('All caches cleared');
+    }).catch(err => {
+      console.error('Error clearing caches:', err);
+    });
+  }
+
+  // Clear non-essential localStorage items (preserve auth-related items)
+  const keysToPreserve = [
+    'firebase:previousApiFailure', // Firebase auth state
+  ];
+  const keysToRemove = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key && !keysToPreserve.some(k => key.includes(k))) {
+      // Keep Firebase auth tokens and user credentials
+      if (!key.includes('firebase:') && !key.includes('googleapis')) {
+        keysToRemove.push(key);
+      }
+    }
+  }
+  keysToRemove.forEach(key => {
+    console.log('Clearing localStorage:', key);
+    localStorage.removeItem(key);
+  });
+
+  // Clear sessionStorage
+  sessionStorage.clear();
+
+  // Force hard reload
+  setTimeout(() => {
+    location.reload(true);
+  }, 500);
+}
+
+function showUpdateModal() {
+  // Check if user previously dismissed
+  if (localStorage.getItem(UPDATE_DISMISSED_KEY)) {
+    const dismissedTime = parseInt(localStorage.getItem(UPDATE_DISMISSED_KEY));
+    const now = Date.now();
+    // Show again if dismissed more than 24 hours ago
+    if (now - dismissedTime < 24 * 60 * 60 * 1000) {
+      return;
+    }
+  }
+
+  pendingUpdate = true;
+  document.getElementById('modal-overlay').classList.remove('hidden');
+  document.getElementById('modal-update').classList.remove('hidden');
+}
+
+function dismissUpdateModal() {
+  document.querySelectorAll('.modal').forEach(m => m.classList.add('hidden'));
+  document.getElementById('modal-overlay').classList.add('hidden');
+  pendingUpdate = false;
+  // Remember dismissal for 24 hours
+  localStorage.setItem(UPDATE_DISMISSED_KEY, Date.now().toString());
 }

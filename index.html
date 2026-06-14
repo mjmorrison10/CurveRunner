@@ -209,6 +209,19 @@
 
   <div id="modal-overlay" class="hidden"></div>
 
+  <div id="modal-update" class="modal hidden">
+    <h2>🚀 Update Available</h2>
+    <p style="font-size:0.95rem;color:var(--text);margin-bottom:20px;line-height:1.5">
+      A new version of CurveRunner is ready! Update now to get the latest features and bug fixes.
+    </p>
+    <div class="row-btns" style="margin-top:16px">
+      <button id="btn-update-now" class="btn-primary">Update Now</button>
+    </div>
+    <div class="row-btns" style="margin-top:8px">
+      <button id="btn-update-later" class="btn-secondary" style="flex:none;padding:10px 16px;font-size:0.85rem;">Remind me later</button>
+    </div>
+  </div>
+
   <div id="modal-history" class="modal hidden">
     <h2>Ride History</h2>
     <p style="color:var(--text-dim);font-size:0.85rem;margin-bottom:10px">Tap ▶ to replay a ride on the map. Tap GPX to export.</p>
@@ -247,6 +260,11 @@
       <div id="account-status" style="font-size:0.85rem;color:var(--text);margin-bottom:8px;">Not signed in</div>
       <button id="btn-settings-signin" class="btn-primary">Sign In / Create Account</button>
       <button id="btn-settings-signout" class="btn-secondary hidden">Sign Out</button>
+    </div>
+    <div style="margin-bottom:14px">
+      <p style="margin-bottom:6px;font-size:0.85rem;color:var(--text-dim)">App Cache</p>
+      <button id="btn-hard-refresh" class="btn-secondary" style="width:100%;margin-bottom:6px;">🔄 Hard Refresh (Clear Cache)</button>
+      <p style="font-size:0.75rem;color:var(--text-dim);">Forces a complete reload and clears cached data. You'll stay logged in.</p>
     </div>
     <div style="margin-bottom:14px" id="settings-pocket-section">
       <p style="margin-bottom:6px;font-size:0.85rem;color:var(--text-dim)">Pocket Mode</p>
