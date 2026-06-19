@@ -1,16 +1,39 @@
 {
   "name": "CurveRunner - Motorcycle Navigation",
   "short_name": "CurveRunner",
+  "description": "Motorcycle navigation built for riders who love curves.",
   "start_url": "./",
+  "scope": "./",
   "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
   "background_color": "#1a1a1a",
   "theme_color": "#1a1a1a",
   "orientation": "portrait",
+  "categories": ["navigation", "travel", "lifestyle"],
   "icons": [
     {
-      "src": "icon.png",
+      "src": "icons/icon-192.png",
       "sizes": "192x192",
-      "type": "image/png"
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-maskable-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
     }
   ]
 }

@@ -34,6 +34,28 @@ let replayMode = 'speed';
 let mapBearingMode = 'north'; // 'north' or 'heading'
 let deviceOrientationHeading = 0;
 
+// --- Performance: navigation cursor (avoid O(n) scan of route on every GPS tick) ---
+let navCursorIdx = 0;      // last known nearest index on the active nav route
+let origCursorIdx = 0;     // last known nearest index on the original planned route
+
+// --- Screen Wake Lock (keeps the display on during a ride; critical for nav) ---
+let wakeLock = null;
+let wakeLockSupported = 'wakeLock' in navigator;
+
+// --- Haptics (eyes-free feedback) ---
+function haptic(pattern) {
+  try {
+    if ('vibrate' in navigator) navigator.vibrate(pattern);
+  } catch (e) { /* ignore */ }
+}
+
+// --- Smoothed map heading for follow mode (low-pass filter avoids spin on noisy GPS) ---
+let smoothedHeading = null;
+function lerpAngle(a, b, t) {
+  let diff = ((b - a + 540) % 360) - 180; // shortest signed turn
+  return (a + diff * t + 360) % 360;
+}
+
 // Curvy Roads Layer
 let curvyRoadsEnabled = false;
 const CURVY_ROADS_SOURCE = 'curvy-roads-source';
@@ -595,7 +617,10 @@ async function reverseGeocode(lon, lat) {
   if (GEOCODE_CACHE[key]) return GEOCODE_CACHE[key];
   try {
     const url = `https://nominatim.openstreetmap.org/reverse?format=json&lon=${lon}&lat=${lat}&zoom=14&accept-language=en`;
-    const res = await fetch(url, { headers: { 'User-Agent': 'CurveRunner/1.0' } });
+    // NOTE: User-Agent is a forbidden fetch header and is silently dropped by the browser.
+    // The browser sends a Referer header automatically, which is what satisfies Nominatim's
+    // usage policy. Do not try to set User-Agent here.
+    const res = await fetch(url);
     if (!res.ok) return null;
     const data = await res.json();
     let name = data.display_name || data.name || null;
@@ -684,7 +709,8 @@ async function fetchSuggestions(query, inputId) {
     const bounds = map.getBounds();
     const viewbox = `${bounds.getWest()},${bounds.getNorth()},${bounds.getEast()},${bounds.getSouth()}`;
     const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=5&viewbox=${viewbox}&accept-language=en`;
-    const res = await fetch(url, { headers: { 'User-Agent': 'CurveRunner/1.0' } });
+    // User-Agent is a forbidden fetch header (silently dropped); browser Referer identifies us.
+    const res = await fetch(url);
     if (!res.ok) return;
     const data = await res.json();
     if (!data || !data.length) {
@@ -820,37 +846,49 @@ async function sleep(ms) {
 
 async function discoverRoutes(start, end, waypoints = null) {
   const costingOptions = buildCostingOptions();
-  // Fewer, more strategically spaced levels to reduce API load
+  // Strategically spaced curviness levels. Run a small pool concurrently instead of
+  // strictly sequentially so the user sees options much faster, while staying polite
+  // to the free shared routing server (concurrency cap + per-worker delay).
   const levels = [0, 100, 50, 25, 75, 12, 62, 87, 37];
   const distinctRoutes = [];
 
-  for (const level of levels) {
-    if (distinctRoutes.length >= 6) break; // enough options
-
-    try {
-      let route;
-      if (waypoints) {
-        const pts = generateWaypointCurvyPath(waypoints, level);
-        route = await fetchRoute(pts, costingOptions);
-      } else {
-        const intermediates = generateCurvyWaypoints(start, end, level);
-        route = await fetchRoute([start, ...intermediates, end], costingOptions);
-      }
-
-      if (route && !isDuplicateRoute(route, distinctRoutes)) {
-        distinctRoutes.push(route);
-      }
-    } catch (e) {
-      console.warn('Route discovery level failed:', level, e.message);
-      // If rate limited, wait longer before next attempt
-      if (e.message && e.message.includes('429')) {
-        await sleep(2000);
-      }
+  const requestAt = (level) => async () => {
+    if (waypoints) {
+      const pts = generateWaypointCurvyPath(waypoints, level);
+      return await fetchRoute(pts, costingOptions);
     }
+    const intermediates = generateCurvyWaypoints(start, end, level);
+    return await fetchRoute([start, ...intermediates, end], costingOptions);
+  };
 
-    // Delay between requests to avoid hammering the free server
-    await sleep(600);
+  const queue = levels.slice();
+  const CONCURRENCY = 2;
+
+  async function worker() {
+    while (queue.length && distinctRoutes.length < 6) {
+      const level = queue.shift();
+      if (level === undefined) break;
+      try {
+        const route = await requestAt(level)();
+        if (route && !isDuplicateRoute(route, distinctRoutes)) {
+          distinctRoutes.push(route);
+        }
+      } catch (e) {
+        console.warn('Route discovery level failed:', level, e.message);
+        // Back off if the free server is rate-limiting us, then re-queue this level once
+        if (e.message && e.message.includes('429')) {
+          await sleep(1500);
+          if (distinctRoutes.length < 6) queue.push(level);
+        }
+      }
+      // Small polite gap between a single worker's own requests
+      await sleep(200);
+    }
   }
+
+  const workers = [];
+  for (let i = 0; i < Math.min(CONCURRENCY, levels.length); i++) workers.push(worker());
+  await Promise.all(workers);
 
   return distinctRoutes;
 }
@@ -1448,6 +1486,35 @@ if ('speechSynthesis' in window) {
   window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices();
 }
 
+/* ---------- Screen Wake Lock (keep display on while riding) ---------- */
+
+async function requestWakeLock() {
+  if (!wakeLockSupported) return;
+  try {
+    wakeLock = await navigator.wakeLock.request('screen');
+    wakeLock.addEventListener('release', () => {
+      // Released (e.g. screen turned off, tab hidden). We try to re-acquire on visibility.
+      wakeLock = null;
+    });
+  } catch (e) {
+    // Silently ignore (e.g. user denied, or not allowed in this context)
+  }
+}
+
+function releaseWakeLock() {
+  if (wakeLock) {
+    try { wakeLock.release(); } catch (e) {}
+    wakeLock = null;
+  }
+}
+
+// Re-acquire the wake lock when the app comes back to the foreground mid-ride
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && isRiding && !wakeLock) {
+    requestWakeLock();
+  }
+});
+
 /* ---------- Ride Recording ---------- */
 
 async function startRide() {
@@ -1503,6 +1570,11 @@ async function startRide() {
   isRiding = true;
   rideData = { points: [], distance: 0, startTime: Date.now(), maxLean: 0, maxSpeed: 0, photos: [] };
   announceState = {};
+  navCursorIdx = 0;
+  origCursorIdx = 0;
+
+  requestWakeLock();
+  haptic(30);
 
   document.getElementById('btn-start-ride').classList.add('hidden');
   document.getElementById('btn-stop-ride').classList.remove('hidden');
@@ -1522,20 +1594,42 @@ async function startRide() {
   speak('Ride started. Navigate safely.');
 }
 
+// Find the nearest coordinate index using a moving cursor with an expanding window.
+// Far cheaper than a full O(n) scan of the route on every GPS tick, while remaining
+// exact (falls back to a full scan if the best hit is on the window boundary).
+function nearestRouteIndex(coords, point, fromIdx, windowSize = 60) {
+  const n = coords.length;
+  if (n === 0) return { idx: 0, dist: Infinity };
+  const clamped = Math.min(Math.max(fromIdx, 0), n - 1);
+  let lo = Math.max(0, clamped - windowSize);
+  let hi = Math.min(n - 1, clamped + windowSize);
+  let minDist = Infinity, nearestIdx = clamped;
+  for (let i = lo; i <= hi; i++) {
+    const d = haversineDistance(point, coords[i]);
+    if (d < minDist) { minDist = d; nearestIdx = i; }
+  }
+  // Best hit on the window edge => rider jumped far from cursor; fall back to full scan.
+  if ((nearestIdx === lo && lo !== 0) || (nearestIdx === hi && hi !== n - 1)) {
+    return fullNearestIndex(coords, point);
+  }
+  return { idx: nearestIdx, dist: minDist };
+}
+
+function fullNearestIndex(coords, point) {
+  let minDist = Infinity, nearestIdx = 0;
+  for (let i = 0; i < coords.length; i++) {
+    const d = haversineDistance(point, coords[i]);
+    if (d < minDist) { minDist = d; nearestIdx = i; }
+  }
+  return { idx: nearestIdx, dist: minDist };
+}
+
 function snapToRoute(userCoords) {
   if (!currentRoute || !currentRoute.maneuvers.length) return;
 
   const coords = currentRoute.geometry.coordinates;
-  let minDist = Infinity;
-  let nearestIdx = 0;
-
-  for (let i = 0; i < coords.length; i++) {
-    const d = haversineDistance(userCoords, coords[i]);
-    if (d < minDist) {
-      minDist = d;
-      nearestIdx = i;
-    }
-  }
+  const { idx: nearestIdx } = nearestRouteIndex(coords, userCoords, navCursorIdx);
+  navCursorIdx = nearestIdx;
 
   // Find the next upcoming maneuver based on nearest route point
   let nextIdx = currentRoute.maneuvers.length - 1;
@@ -1563,6 +1657,7 @@ function stopRide() {
   isRiding = false;
   if (geoWatchId !== null) navigator.geolocation.clearWatch(geoWatchId);
   clearInterval(rideTimerInterval);
+  releaseWakeLock();
 
   const duration = Math.floor((Date.now() - rideData.startTime) / 1000);
   const curves = detectCurves(rideData.points);
@@ -1608,6 +1703,7 @@ function cancelRide() {
   isRiding = false;
   if (geoWatchId !== null) navigator.geolocation.clearWatch(geoWatchId);
   clearInterval(rideTimerInterval);
+  releaseWakeLock();
   speak('Navigation cancelled.');
 
   document.getElementById('btn-stop-ride').classList.add('hidden');
@@ -1668,22 +1764,27 @@ function handleRidePosition(position) {
   document.getElementById('hud-dist').textContent = rideData.distance.toFixed(1);
   document.getElementById('hud-lean').textContent = Math.round(leanAngle) + '°';
 
-  // Follow rider in nav mode
+  // Follow rider in nav mode — smooth, jitter-resistant camera.
   if (navFollowMode) {
-    const centerOptions = { center: coords, duration: 500, easing: t => t };
+    let bearing = null;
     if (mapBearingMode === 'heading') {
       // Use GPS heading when moving, fallback to device compass
-      let bearing = position.coords.heading;
-      if (bearing === null || isNaN(bearing) || bearing < 0) {
-        bearing = deviceOrientationHeading;
-      }
-      if (bearing !== null && !isNaN(bearing) && bearing >= 0) {
-        centerOptions.bearing = bearing;
+      let raw = position.coords.heading;
+      if (raw === null || isNaN(raw) || raw < 0) raw = deviceOrientationHeading;
+      if (raw !== null && !isNaN(raw) && raw >= 0) {
+        // Low-pass filter so one noisy sample can't spin the whole map.
+        smoothedHeading = (smoothedHeading === null) ? raw : lerpAngle(smoothedHeading, raw, 0.35);
+        bearing = smoothedHeading;
       }
     } else {
-      centerOptions.bearing = 0; // North-up
+      bearing = 0; // North-up
+      smoothedHeading = null;
     }
-    map.easeTo(centerOptions);
+    // Default easing (NOT linear) + essential:true so the camera animates smoothly and
+    // keeps rendering; ~800ms pairs with a ~1Hz GPS feed for continuous, non-jittery follow.
+    const easeOpts = { center: coords, duration: 800, essential: true };
+    if (bearing !== null) easeOpts.bearing = bearing;
+    map.easeTo(easeOpts);
   }
 
   // Post to group ride if sharing (throttle to 10s)
@@ -1705,34 +1806,21 @@ function updateNav(position) {
   const coords = navRoute.geometry.coordinates;
   const maneuvers = navRoute.maneuvers;
 
-  // Find nearest point on the currently navigated route
-  let minDist = Infinity;
-  let nearestIdx = 0;
-  for (let i = 0; i < coords.length; i++) {
-    const d = haversineDistance(userCoords, coords[i]);
-    if (d < minDist) {
-      minDist = d;
-      nearestIdx = i;
-    }
-  }
+  // Find nearest point on the currently navigated route (cursor-based, not full O(n))
+  const { idx: nearestIdx } = nearestRouteIndex(coords, userCoords, navCursorIdx);
+  navCursorIdx = nearestIdx;
 
   // Off-route detection against the original planned route
   if (originalRoute && originalRoute.geometry && originalRoute.geometry.coordinates.length) {
     const origCoords = originalRoute.geometry.coordinates;
-    let origMinDist = Infinity;
-    let origNearestIdx = 0;
-    for (let i = 0; i < origCoords.length; i++) {
-      const d = haversineDistance(userCoords, origCoords[i]);
-      if (d < origMinDist) {
-        origMinDist = d;
-        origNearestIdx = i;
-      }
-    }
+    const { idx: origNearestIdx, dist: origMinDist } = nearestRouteIndex(origCoords, userCoords, origCursorIdx);
+    origCursorIdx = origNearestIdx;
 
     const now = Date.now();
     if (!rerouteActive && origMinDist > OFF_ROUTE_THRESHOLD_KM) {
       offRouteCounter++;
       if (offRouteCounter >= OFF_ROUTE_TRIGGER_COUNT && (now - lastRerouteTime) > REROUTE_COOLDOWN) {
+        haptic([80, 60, 80, 60, 120]); // urgent pattern: you're off-route
         beginReroute(userCoords, origNearestIdx, position.coords.heading);
       }
     } else {
@@ -1789,6 +1877,7 @@ function updateNav(position) {
   if (!state.at50 && dist < 0.05) {
     state.at50 = true;
     speak(man.instruction);
+    haptic([45, 55, 45]); // distinct double-tap for the actual turn cue
     nextStepIdx++;
     const nextMan = maneuvers[nextStepIdx];
     document.getElementById('nav-instruction').textContent = nextMan ? nextMan.instruction : 'You have arrived';
@@ -1867,6 +1956,7 @@ async function beginReroute(userCoords, progressIdx, userHeading) {
     const route = await fetchRoute([userCoords, rejoin.point], costingOptions);
     rerouteTempRoute = route;
     navRoute = route;
+    navCursorIdx = 0; // temp route is a different coordinate array; reset cursor
     rerouteActive = true;
     rejoinPointIndex = rejoin.index;
     nextStepIdx = 0;
@@ -1890,6 +1980,7 @@ function cancelReroute(newProgressIdx) {
   rerouteActive = false;
   rerouteTempRoute = null;
   navRoute = originalRoute;
+  navCursorIdx = newProgressIdx; // resume cursor on the original route's coordinate array
   offRouteCounter = 0;
   map.getSource('reroute-source').setData({ type: 'Feature', geometry: { type: 'LineString', coordinates: [] } });
 
@@ -2721,8 +2812,17 @@ function showSettingsModal() {
   document.getElementById('modal-settings').classList.remove('hidden');
 }
 
+const _toastSeen = new Map();
 function showToast(msg) {
+  if (!msg) return;
   const container = document.getElementById('toast-container');
+  if (!container) return;
+  // Collapse rapid-fire duplicate messages (e.g. group rider position updates)
+  const now = Date.now();
+  if (now - (_toastSeen.get(msg) || 0) < 700) return;
+  _toastSeen.set(msg, now);
+  // Keep the toast stack from growing unbounded
+  while (container.children.length >= 4) container.removeChild(container.firstChild);
   const toast = document.createElement('div');
   toast.className = 'toast';
   toast.textContent = msg;
@@ -2736,12 +2836,48 @@ function showToast(msg) {
 
 /* ---------- Welcome Screen & Auth ---------- */
 
-function initFirebase() {
-  if (!FIREBASE_CONFIGURED) {
-    console.log('Firebase not configured. Cloud sync disabled.');
-    checkWelcomeScreen();
-    return;
-  }
+// Returns true if a previous Firebase auth session was persisted in localStorage.
+// We use this to decide whether to download the Firebase SDK on startup.
+function hasStoredFirebaseSession() {
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.indexOf('firebase:authUser') === 0) return true;
+    }
+  } catch (e) {}
+  return false;
+}
+
+let _firebaseLoadPromise = null;
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src;
+    s.async = true;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error('Failed to load ' + src));
+    document.head.appendChild(s);
+  });
+}
+
+// Lazy-load the Firebase compat SDK (app + auth + firestore) in order. Cached so it
+// only ever loads once. This keeps ~500KB off the critical path for anonymous users.
+function loadFirebaseSDK() {
+  if (_firebaseLoadPromise) return _firebaseLoadPromise;
+  const base = 'https://www.gstatic.com/firebasejs/10.12.2/';
+  const scripts = [
+    base + 'firebase-app-compat.js',
+    base + 'firebase-auth-compat.js',
+    base + 'firebase-firestore-compat.js'
+  ];
+  _firebaseLoadPromise = scripts.reduce(
+    (p, src) => p.then(() => loadScript(src)),
+    Promise.resolve()
+  ).then(() => window.firebase);
+  return _firebaseLoadPromise;
+}
+
+function setupFirebase() {
   try {
     firebaseApp = firebase.initializeApp(firebaseConfig);
     firebaseAuth = firebase.auth();
@@ -2775,6 +2911,24 @@ function initFirebase() {
   }
 }
 
+function initFirebase() {
+  if (!FIREBASE_CONFIGURED) {
+    console.log('Firebase not configured. Cloud sync disabled.');
+    checkWelcomeScreen();
+    return;
+  }
+  // Only download the Firebase SDK if the user was previously signed in (session restore),
+  // or is actively signing in. Brand-new / anonymous visitors never pay this ~500KB cost.
+  if (!hasStoredFirebaseSession()) {
+    checkWelcomeScreen();
+    return;
+  }
+  loadFirebaseSDK().then(() => setupFirebase()).catch(e => {
+    console.error('Firebase SDK load failed', e);
+    checkWelcomeScreen();
+  });
+}
+
 function checkWelcomeScreen() {
   if (localStorage.getItem('curveRunner_welcomeSeen') === 'true') {
     hideWelcomeScreen();
@@ -2793,8 +2947,20 @@ function hideWelcomeScreen() {
   if (screen) screen.classList.add('hidden');
 }
 
+async function ensureFirebaseReady() {
+  if (!FIREBASE_CONFIGURED) { showToast('Firebase not configured'); return false; }
+  try {
+    await loadFirebaseSDK();
+    if (!firebaseAuth) setupFirebase();
+  } catch (e) {
+    showToast('Could not load sign-in');
+    return false;
+  }
+  return !!firebaseAuth;
+}
+
 async function signInWithGoogle() {
-  if (!firebaseAuth) return showToast('Firebase not configured');
+  if (!(await ensureFirebaseReady())) return;
   const provider = new firebase.auth.GoogleAuthProvider();
   try {
     await firebaseAuth.signInWithRedirect(provider);
@@ -2805,7 +2971,7 @@ async function signInWithGoogle() {
 }
 
 async function signInWithEmail() {
-  if (!firebaseAuth) return showToast('Firebase not configured');
+  if (!(await ensureFirebaseReady())) return;
   const email = document.getElementById('welcome-email').value.trim();
   const password = document.getElementById('welcome-password').value;
   if (!email || !password) return showToast('Enter email and password');
@@ -2818,7 +2984,7 @@ async function signInWithEmail() {
 }
 
 async function signUpWithEmail() {
-  if (!firebaseAuth) return showToast('Firebase not configured');
+  if (!(await ensureFirebaseReady())) return;
   const email = document.getElementById('welcome-email').value.trim();
   const password = document.getElementById('welcome-password').value;
   if (!email || !password) return showToast('Enter email and password');
@@ -3505,8 +3671,16 @@ function calculateCurviness(coordinates) {
 
 async function fetchRoadsForBounds(bounds) {
   const [west, south, east, north] = bounds;
-  
-  // Overpass QL query for highway ways within bounds
+
+  // Guard: never query a huge area (zoomed-out view) — that would pull far too much
+  // data from Overpass and freeze the map. Only fetch when the viewport is reasonably small.
+  const diagKm = haversineDistance([west, south], [east, north]);
+  if (diagKm > 35) {
+    return { type: 'FeatureCollection', features: [] };
+  }
+
+  // Overpass QL — significant roads only. Footways, paths, cycleways, service roads and
+  // tracks are omitted to keep the payload small and the layer focused on real riding roads.
   const query = `
     [out:json][timeout:25];
     (
@@ -3515,26 +3689,21 @@ async function fetchRoadsForBounds(bounds) {
       way["highway"="primary"](${south},${west},${north},${east});
       way["highway"="secondary"](${south},${west},${north},${east});
       way["highway"="tertiary"](${south},${west},${north},${east});
-      way["highway"="residential"](${south},${west},${north},${east});
       way["highway"="unclassified"](${south},${west},${north},${east});
-      way["highway"="service"](${south},${west},${north},${east});
-      way["highway"="track"](${south},${west},${north},${east});
-      way["highway"="path"](${south},${west},${north},${east});
-      way["highway"="cycleway"](${south},${west},${north},${east});
-      way["highway"="footway"](${south},${west},${north},${east});
+      way["highway"="residential"](${south},${west},${north},${east});
     );
     out body;
    >;
     out skel qt;
   `.trim().replace(/\s+/g, ' ');
-  
+
   try {
     const response = await fetch('https://overpass-api.de/api/interpreter', {
       method: 'POST',
       body: 'data=' + encodeURIComponent(query),
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
     });
-    
+
     if (!response.ok) {
       console.error('Overpass API error:', response.status);
       return { type: 'FeatureCollection', features: [] };
@@ -3656,6 +3825,9 @@ function toggleCurvyRoads() {
       map.setLayoutProperty(CURVY_ROADS_LAYER, 'visibility', 'visible');
     }
     updateCurvyRoads();
+    if (map.getZoom() < 11) {
+      showToast('Zoom in closer to load curvy roads');
+    }
   } else {
     btn.classList.remove('active');
     if (map.getLayer(CURVY_ROADS_LAYER)) {
@@ -3728,9 +3900,9 @@ function hardRefresh() {
   // Clear sessionStorage
   sessionStorage.clear();
 
-  // Force hard reload
+  // Force hard reload (boolean arg is deprecated and ignored in modern browsers)
   setTimeout(() => {
-    location.reload(true);
+    location.reload();
   }, 500);
 }
 

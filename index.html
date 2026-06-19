@@ -3,17 +3,30 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="description" content="CurveRunner — motorcycle navigation built for riders who love curves. Curvy route discovery, turn-by-turn nav, lean-angle & ride analysis, offline maps.">
   <meta name="theme-color" content="#1a1a1a">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="CurveRunner">
   <title>CurveRunner - Motorcycle Nav</title>
+
+  <!-- Preconnect to critical origins so handshakes overlap with parsing -->
+  <link rel="preconnect" href="https://unpkg.com" crossorigin>
+  <link rel="preconnect" href="https://tile.openstreetmap.org" crossorigin>
+  <link rel="preconnect" href="https://nominatim.openstreetmap.org" crossorigin>
+  <link rel="preconnect" href="https://valhalla1.openstreetmap.de" crossorigin>
+  <link rel="dns-prefetch" href="https://www.gstatic.com">
+  <link rel="dns-prefetch" href="https://api.open-meteo.com">
+  <link rel="dns-prefetch" href="https://ntfy.sh">
+  <link rel="dns-prefetch" href="https://overpass-api.de">
+
   <link rel="manifest" href="manifest.json">
-  <link rel="apple-touch-icon" href="icon.png">
-  <link rel="icon" type="image/png" href="favicon.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+  <link rel="icon" type="image/png" sizes="64x64" href="icons/favicon-64.png">
   <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" />
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.min.css">
 </head>
 <body>
   <!-- Welcome / Onboarding Screen -->
@@ -63,23 +76,23 @@
 
     <div id="top-bar">
       <div class="logo">🏍️ CurveRunner</div>
-      <div class="actions">
-        <button id="btn-premium" class="premium-toggle active">PREMIUM</button>
-        <button id="btn-offline" class="icon-btn" title="Save Offline">📴</button>
-        <button id="btn-history" class="icon-btn" title="Ride History">📜</button>
-        <button id="btn-curvy-roads" class="icon-btn" title="Show Curvy Roads">🌀</button>
-        <button id="btn-settings" class="icon-btn" title="Settings">⚙️</button>
-        <button id="btn-pocket" class="icon-btn" title="Pocket Mode">🤏</button>
-      </div>
+    <div class="actions">
+      <button id="btn-premium" class="premium-toggle active" aria-label="Toggle Premium or Free mode">PREMIUM</button>
+      <button id="btn-offline" class="icon-btn" title="Save Offline" aria-label="Save route offline">📴</button>
+      <button id="btn-history" class="icon-btn" title="Ride History" aria-label="Open ride history">📜</button>
+      <button id="btn-curvy-roads" class="icon-btn" title="Show Curvy Roads" aria-label="Toggle curvy roads overlay">🌀</button>
+      <button id="btn-settings" class="icon-btn" title="Settings" aria-label="Open settings">⚙️</button>
+      <button id="btn-pocket" class="icon-btn" title="Pocket Mode" aria-label="Calibrate pocket mode">🤏</button>
+    </div>
     </div>
 
     <div id="warning-banner" class="hidden">
       ⚠️ Keep screen on for live navigation. Mount phone to handlebars for best lean-angle accuracy.
     </div>
 
-    <div id="nav-banner" class="hidden">
+    <div id="nav-banner" class="hidden" role="status" aria-live="polite">
       <div id="nav-instruction">Navigate safely</div>
-      <div id="nav-distance">--</div>
+      <div id="nav-distance" aria-label="Distance to next maneuver">--</div>
     </div>
 
     <div id="ride-hud" class="hidden">
@@ -90,14 +103,14 @@
     </div>
 
     <div id="ride-actions" class="hidden">
-      <button id="btn-photo" class="icon-btn" title="Drop Photo">📷</button>
-      <button id="btn-compass" class="icon-btn" title="Toggle compass">🧭</button>
-      <button id="btn-group-share" class="icon-btn" title="Share Group Ride">👥</button>
+      <button id="btn-photo" class="icon-btn" title="Drop Photo" aria-label="Drop photo waypoint">📷</button>
+      <button id="btn-compass" class="icon-btn" title="Toggle compass" aria-label="Toggle north-up or heading-up">🧭</button>
+      <button id="btn-group-share" class="icon-btn" title="Share Group Ride" aria-label="Share live group ride">👥</button>
     </div>
 
-    <div id="nav-mode-toggle" class="hidden">
-      <button id="btn-nav-follow" class="active" title="Follow me">📍</button>
-      <button id="btn-nav-overview" title="See whole route">🗺️</button>
+    <div id="nav-mode-toggle" class="hidden" role="group" aria-label="Navigation view mode">
+      <button id="btn-nav-follow" class="active" title="Follow me" aria-label="Follow my position">📍</button>
+      <button id="btn-nav-overview" title="See whole route" aria-label="Overview whole route">🗺️</button>
     </div>
 
     <div id="bottom-panel">
@@ -108,9 +121,9 @@
       </div>
 
       <div id="panel-auto">
-        <input type="text" id="search-start" placeholder="Start location (or leave blank for GPS)" autocomplete="off">
+        <input type="text" id="search-start" placeholder="Start location (or leave blank for GPS)" autocomplete="off" aria-label="Start location">
         <ul id="suggestions-start" class="suggestions-list hidden"></ul>
-        <input type="text" id="search-end" placeholder="Destination" autocomplete="off">
+        <input type="text" id="search-end" placeholder="Destination" autocomplete="off" aria-label="Destination">
         <ul id="suggestions-end" class="suggestions-list hidden"></ul>
         <div id="route-options-auto" class="route-options-container hidden">
           <p class="hint">Choose your preferred route:</p>
@@ -163,7 +176,7 @@
       </div>
     </div>
 
-    <div id="toast-container"></div>
+    <div id="toast-container" role="status" aria-live="polite" aria-atomic="false"></div>
 
     <div id="pocket-countdown-overlay" class="hidden">
       <div class="countdown-content">
@@ -354,11 +367,9 @@
 
   <input type="file" id="photo-capture" accept="image/*" capture="environment" class="hidden">
 
-  <script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
-  <!-- Firebase Auth & Firestore (compat SDK) — load even if not configured so UI works everywhere -->
-  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
-  <script src="app.js"></script>
+  <!-- MapLibre is core; load with defer so download overlaps parsing but executes before app init.
+       Firebase (Auth + Firestore) is lazy-loaded only when the user signs in — it is NOT on the critical path. -->
+  <script defer src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
+  <script defer src="app.min.js"></script>
 </body>
 </html>
