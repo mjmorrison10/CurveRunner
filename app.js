@@ -2947,10 +2947,12 @@ function setupFirebase() {
 
     // Handle redirect result from signInWithRedirect (page reloads after redirect)
     firebaseAuth.getRedirectResult().then(result => {
+      sessionStorage.removeItem('curveRunner_signingIn');
       if (result.user) {
         showToast('Signed in with Google');
       }
     }).catch(error => {
+      sessionStorage.removeItem('curveRunner_signingIn');
       if (error.code !== 'auth/no-auth-event') {
         console.error('Redirect result error', error);
         showToast('Sign-in error: ' + error.message);
@@ -2961,6 +2963,7 @@ function setupFirebase() {
       currentUser = user;
       updateAuthUI();
       if (user) {
+        sessionStorage.removeItem('curveRunner_signingIn');
         hideWelcomeScreen();
         syncRidesFromCloud();
       } else {
@@ -2969,6 +2972,7 @@ function setupFirebase() {
     });
   } catch (e) {
     console.error('Firebase init failed', e);
+    sessionStorage.removeItem('curveRunner_signingIn');
     checkWelcomeScreen();
   }
 }
@@ -2979,14 +2983,17 @@ function initFirebase() {
     checkWelcomeScreen();
     return;
   }
-  // Only download the Firebase SDK if the user was previously signed in (session restore),
-  // or is actively signing in. Brand-new / anonymous visitors never pay this ~500KB cost.
-  if (!hasStoredFirebaseSession()) {
+  // Load Firebase if:
+  // 1. A previous session is stored (restore on app open), or
+  // 2. We are returning from a redirect sign-in (SDK must load to process the result).
+  const returningFromRedirect = sessionStorage.getItem('curveRunner_signingIn') === 'true';
+  if (!hasStoredFirebaseSession() && !returningFromRedirect) {
     checkWelcomeScreen();
     return;
   }
   loadFirebaseSDK().then(() => setupFirebase()).catch(e => {
     console.error('Firebase SDK load failed', e);
+    sessionStorage.removeItem('curveRunner_signingIn');
     checkWelcomeScreen();
   });
 }
@@ -3021,13 +3028,18 @@ async function ensureFirebaseReady() {
   return !!firebaseAuth;
 }
 
+
+
 async function signInWithGoogle() {
   if (!(await ensureFirebaseReady())) return;
   const provider = new firebase.auth.GoogleAuthProvider();
   try {
+    // Mark that we are starting a redirect sign-in so the SDK loads on the return trip.
+    sessionStorage.setItem('curveRunner_signingIn', 'true');
     await firebaseAuth.signInWithRedirect(provider);
     // Page reloads after redirect; getRedirectResult handles the rest
   } catch (e) {
+    sessionStorage.removeItem('curveRunner_signingIn');
     showToast('Google sign-in failed: ' + e.message);
   }
 }
