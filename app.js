@@ -1146,22 +1146,64 @@ async function fetchRoute(locations, costingOptions = {}, retries = 2) {
     }
 
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
       const res = await fetch(VALHALLA_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
+        body: JSON.stringify(body),
+        signal: controller.signal
       });
+      clearTimeout(timeoutId);
 
       if (res.status === 429) {
         lastError = new Error('429 Too Many Requests');
         continue; // retry
       }
-  if (!res.ok) throw new Error('HTTP ' + res.status);
-  const data = await res.json();
-  if (data.error) throw new Error(data.error);
-  if (!data.trip || !data.trip.legs || !data.trip.legs.length) throw new Error('No route found');
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      if (!data.trip || !data.trip.legs || !data.trip.legs.length) throw new Error('No route found');
 
-      // Concatenate all legs into a single continuous route
+      return parseValhallaRoute(data);
+    } catch (e) {
+      lastError = e;
+      if (e.message && (e.message.includes('timeout') || e.message.includes('Failed to fetch') || e.message.includes('NETWORK') || e.message.includes('HTTP 0'))) {
+        // Connection-level failure — don't waste retries, try the fallback immediately.
+        break;
+      }
+      if (attempt >= retries) break;
+    }
+  }
+
+  // Fallback: OSRM driving profile when Valhalla is unreachable.
+  try {
+    showToast('Valhalla routing is down. Falling back to OSRM...');
+    return await fetchRouteOSRM(locations);
+  } catch (osrmErr) {
+    console.error('OSRM fallback failed', osrmErr);
+  }
+
+  throw lastError || new Error('Routing failed. The motorcycle routing server is unavailable.');
+}
+
+async function fetchRouteOSRM(locations) {
+  const coords = locations.map(loc => `${loc[0]},${loc[1]}`).join(';');
+  const url = `https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('OSRM HTTP ' + res.status);
+  const data = await res.json();
+  if (data.code !== 'Ok' || !data.routes || !data.routes.length) throw new Error('OSRM no route');
+  const route = data.routes[0];
+  return {
+    geometry: route.geometry,
+    maneuvers: [],
+    length: (route.distance || 0) / 1000,
+    time: (route.duration || 0)
+  };
+}
+
+function parseValhallaRoute(data) {
   let allCoords = [];
   let allManeuvers = [];
   let shapeOffset = 0;
@@ -1170,7 +1212,6 @@ async function fetchRoute(locations, costingOptions = {}, retries = 2) {
     let coords = decodePolyline(leg.shape, 6);
     if (coords.length < 2) coords = decodePolyline(leg.shape, 5);
 
-    // Avoid duplicating the last point of previous leg
     if (allCoords.length > 0 && coords.length > 0) {
       const last = allCoords[allCoords.length - 1];
       const first = coords[0];
@@ -1180,7 +1221,6 @@ async function fetchRoute(locations, costingOptions = {}, retries = 2) {
     }
     allCoords = allCoords.concat(coords);
 
-    // Adjust maneuver shape indices to account for previous legs
     if (leg.maneuvers) {
       for (const m of leg.maneuvers) {
         const adjusted = {
@@ -1194,19 +1234,15 @@ async function fetchRoute(locations, costingOptions = {}, retries = 2) {
     shapeOffset += coords.length;
   }
 
-      return {
-        geometry: { type: 'LineString', coordinates: allCoords },
-        maneuvers: allManeuvers,
-        length: data.trip.summary ? data.trip.summary.length : 0,
-        time: data.trip.summary ? data.trip.summary.time : 0
-      };
-    } catch (e) {
-      lastError = e;
-      if (attempt >= retries) throw e;
-    }
-  }
-  throw lastError || new Error('Routing failed after retries');
+  return {
+    geometry: { type: 'LineString', coordinates: allCoords },
+    maneuvers: allManeuvers,
+    length: data.trip.summary ? data.trip.summary.length : 0,
+    time: data.trip.summary ? data.trip.summary.time : 0
+  };
 }
+
+
 
 function decodePolyline(str, precision = 6) {
   let index = 0, lat = 0, lng = 0, coordinates = [];
@@ -3034,25 +3070,14 @@ async function signInWithGoogle() {
   if (!(await ensureFirebaseReady())) return;
   const provider = new firebase.auth.GoogleAuthProvider();
   try {
-    // Try popup first. It avoids the redirect flow that many ad blockers / privacy
-    // extensions break by blocking accounts.google.com requests.
-    await firebaseAuth.signInWithPopup(provider);
-    showToast('Signed in with Google');
+    // Mark that we are starting a redirect sign-in so the SDK loads on the return trip.
+    sessionStorage.setItem('curveRunner_signingIn', 'true');
+    await firebaseAuth.signInWithRedirect(provider);
+    // Page reloads after redirect; getRedirectResult handles the rest
   } catch (e) {
-    if (e.code === 'auth/popup-blocked' || e.code === 'auth/popup-closed-by-user' || e.code === 'auth/cancelled-popup-request') {
-      // Popup was blocked by the browser — fall back to redirect.
-      sessionStorage.setItem('curveRunner_signingIn', 'true');
-      try {
-        await firebaseAuth.signInWithRedirect(provider);
-      } catch (redirectErr) {
-        sessionStorage.removeItem('curveRunner_signingIn');
-        console.error('Google redirect sign-in error', redirectErr);
-        showToast('Sign-in blocked. Try disabling extensions for this site.');
-      }
-    } else {
-      console.error('Google sign-in error', e);
-      showToast('Google sign-in failed: ' + e.message);
-    }
+    sessionStorage.removeItem('curveRunner_signingIn');
+    console.error('Google redirect sign-in error', e);
+    showToast('Google sign-in failed: ' + e.message);
   }
 }
 
