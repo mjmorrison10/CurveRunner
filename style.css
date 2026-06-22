@@ -175,6 +175,27 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; appearance
 .toggle-row label { font-size: 0.9rem; color: var(--text-dim); }
 input[type="checkbox"] { width: 22px; height: 22px; accent-color: var(--accent); cursor: pointer; }
 
+.curviness-scale { margin-bottom: 12px; }
+.curviness-scale > label {
+  display: block; font-size: 0.9rem; color: var(--text-dim); margin-bottom: 6px;
+}
+.curviness-options {
+  display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px;
+}
+.curviness-btn {
+  background: var(--panel); border: 1px solid var(--border); color: var(--text-dim);
+  padding: 8px 3px; border-radius: 8px; font-size: 0.7rem; font-weight: 600;
+  cursor: pointer; transition: all 0.2s; text-align: center; line-height: 1.2;
+  white-space: normal; overflow-wrap: break-word; hyphens: auto;
+}
+.curviness-btn.active {
+  background: var(--accent); border-color: var(--accent); color: #fff;
+  box-shadow: 0 0 10px rgba(255, 107, 0, 0.35);
+}
+.curviness-btn:active {
+  background: var(--accent); border-color: var(--accent); color: #fff;
+}
+
 #route-stats {
   display: flex; justify-content: space-between; align-items: center;
   background: var(--bg); border: 1px solid var(--border); border-radius: 8px;

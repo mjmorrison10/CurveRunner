@@ -1,4 +1,4 @@
-const CACHE_NAME = 'curve-runner-v7';
+const CACHE_NAME = 'curve-runner-v8';
 const APP_ASSETS = [
   './',
   './index.html',

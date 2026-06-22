@@ -1,6 +1,6 @@
 const VALHALLA_URL = 'https://valhalla1.openstreetmap.de/route';
 const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search';
-const VALHALLA_HEIGHT_URL = 'https://valhalla1.openstreetmap.de/height';
+const OPEN_METEO_ELEVATION_URL = 'https://api.open-meteo.com/v1/elevation';
 
 let map;
 let currentMode = 'auto';
@@ -33,6 +33,16 @@ let friendMarkers = {};
 let replayMode = 'speed';
 let mapBearingMode = 'north'; // 'north' or 'heading'
 let deviceOrientationHeading = 0;
+
+// Curviness scale for waypoint routing (0-100)
+let waypointCurviness = parseInt(localStorage.getItem('curveRunner_curviness') || '0', 10);
+const CURVINESS_LEVELS = [
+  { name: 'Straight', value: 0 },
+  { name: 'Slightly Curvy', value: 25 },
+  { name: 'Medium Curvy', value: 50 },
+  { name: 'More Curvy', value: 75 },
+  { name: 'Maximum Curvy', value: 100 }
+];
 
 // --- Performance: navigation cursor (avoid O(n) scan of route on every GPS tick) ---
 let navCursorIdx = 0;      // last known nearest index on the active nav route
@@ -347,6 +357,13 @@ function updatePremiumUI() {
   }
 }
 
+function updateCurvinessUI() {
+  document.querySelectorAll('#curviness-options .curviness-btn').forEach(btn => {
+    const level = parseInt(btn.dataset.level, 10);
+    btn.classList.toggle('active', level === waypointCurviness);
+  });
+}
+
 function togglePremium() {
   isPremium = !isPremium;
   localStorage.setItem('curveRunner_premium', isPremium);
@@ -401,6 +418,7 @@ function flashMarker(marker) {
 
 function initUI() {
   updatePremiumUI();
+  updateCurvinessUI();
 
   document.querySelectorAll('.tab').forEach(tab => {
     tab.addEventListener('click', () => {
@@ -464,6 +482,19 @@ function initUI() {
   document.getElementById('btn-route-auto').addEventListener('click', calculateAutoRoute);
   document.getElementById('btn-route-wp').addEventListener('click', () => calculateWaypointRoute(false, false));
   document.getElementById('btn-clear-wp').addEventListener('click', clearWaypoints);
+
+  // Curviness scale buttons
+  document.querySelectorAll('#curviness-options .curviness-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('#curviness-options .curviness-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      waypointCurviness = parseInt(btn.dataset.level, 10);
+      localStorage.setItem('curveRunner_curviness', String(waypointCurviness));
+      if (waypoints.length >= 2) {
+        triggerAutoRoute();
+      }
+    });
+  });
   document.getElementById('btn-start-ride').addEventListener('click', startRide);
   document.getElementById('btn-stop-ride').addEventListener('click', stopRide);
   document.getElementById('btn-history').addEventListener('click', showHistoryModal);
@@ -807,31 +838,11 @@ function isDuplicateRoute(route, existingRoutes) {
   return false;
 }
 
-const ROUTE_NAME_MAP = {
-  2: [0, 5],
-  3: [0, 2, 5],
-  4: [0, 1, 2, 5],
-  5: [0, 1, 2, 3, 5],
-  6: [0, 1, 2, 3, 4, 5]
-};
-
 function getRouteOptionNames(count) {
-  const names = [
-    'Straight path',
-    'Least curves',
-    'Curvy',
-    'More curvy',
-    'Even more curvy',
-    'Maximum curvy',
-    'Very twisty',
-    'Extremely twisty',
-    'Winding madness',
-    'Maximum intensity'
-  ];
   if (count <= 1) return ['Route'];
-  if (count <= 6 && ROUTE_NAME_MAP[count]) {
-    return ROUTE_NAME_MAP[count].map(i => names[i]);
-  }
+  // Clamp to the 5 named curviness levels so options are always meaningful
+  const names = CURVINESS_LEVELS.map(l => l.name);
+  if (count <= names.length) return names.slice(0, count);
   const result = [];
   const step = (names.length - 1) / (count - 1);
   for (let i = 0; i < count; i++) {
@@ -844,12 +855,10 @@ async function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function discoverRoutes(start, end, waypoints = null) {
+async function discoverRoutes(start, end, waypoints = null, preferredLevel = null) {
   const costingOptions = buildCostingOptions();
-  // Strategically spaced curviness levels. Run a small pool concurrently instead of
-  // strictly sequentially so the user sees options much faster, while staying polite
-  // to the free shared routing server (concurrency cap + per-worker delay).
-  const levels = [0, 100, 50, 25, 75, 12, 62, 87, 37];
+  // Ordered from straight to maximum curvy so the first option is always the most direct.
+  const levels = preferredLevel !== null ? [preferredLevel] : CURVINESS_LEVELS.map(l => l.value);
   const distinctRoutes = [];
 
   const requestAt = (level) => async () => {
@@ -865,23 +874,31 @@ async function discoverRoutes(start, end, waypoints = null) {
   const CONCURRENCY = 2;
 
   async function worker() {
-    while (queue.length && distinctRoutes.length < 6) {
+    while (queue.length && distinctRoutes.length < levels.length) {
       const level = queue.shift();
       if (level === undefined) break;
       try {
         const route = await requestAt(level)();
-        if (route && !isDuplicateRoute(route, distinctRoutes)) {
-          distinctRoutes.push(route);
+        if (route) {
+          route.curvinessLevel = level;
+          if (!isDuplicateRoute(route, distinctRoutes)) {
+            distinctRoutes.push(route);
+          } else {
+            // If this level produced a duplicate of a straighter option, try a slightly
+            // higher curviness to force a visibly different route.
+            const adjusted = level + 10;
+            if (adjusted <= 100 && !queue.includes(adjusted)) {
+              queue.push(adjusted);
+            }
+          }
         }
       } catch (e) {
         console.warn('Route discovery level failed:', level, e.message);
-        // Back off if the free server is rate-limiting us, then re-queue this level once
         if (e.message && e.message.includes('429')) {
           await sleep(1500);
-          if (distinctRoutes.length < 6) queue.push(level);
+          if (distinctRoutes.length < levels.length) queue.push(level);
         }
       }
-      // Small polite gap between a single worker's own requests
       await sleep(200);
     }
   }
@@ -890,10 +907,12 @@ async function discoverRoutes(start, end, waypoints = null) {
   for (let i = 0; i < Math.min(CONCURRENCY, levels.length); i++) workers.push(worker());
   await Promise.all(workers);
 
+  // Sort by curviness level ascending so the UI matches the scale left-to-right.
+  distinctRoutes.sort((a, b) => (a.curvinessLevel || 0) - (b.curvinessLevel || 0));
   return distinctRoutes;
 }
 
-function showRouteOptions(routes, mode) {
+function showRouteOptions(routes, mode, preferredLevel = null) {
   const containerId = mode === 'auto' ? 'route-options-auto' : 'route-options-waypoints';
   const listId = mode === 'auto' ? 'route-options-list-auto' : 'route-options-list-waypoints';
   const container = document.getElementById(containerId);
@@ -904,9 +923,22 @@ function showRouteOptions(routes, mode) {
 
   const names = getRouteOptionNames(routes.length);
 
+  // Pick the default route: the one closest to the preferred curviness level, or the first.
+  let defaultIndex = 0;
+  if (preferredLevel !== null && routes.length > 1) {
+    let bestDiff = Infinity;
+    routes.forEach((route, i) => {
+      const diff = Math.abs((route.curvinessLevel || 0) - preferredLevel);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        defaultIndex = i;
+      }
+    });
+  }
+
   routes.forEach((route, i) => {
     const btn = document.createElement('div');
-    btn.className = 'route-option' + (i === 0 ? ' selected' : '');
+    btn.className = 'route-option' + (i === defaultIndex ? ' selected' : '');
     btn.innerHTML = `
       <div>
         <div class="name">${i + 1}. ${names[i]}</div>
@@ -922,13 +954,13 @@ function showRouteOptions(routes, mode) {
     list.appendChild(btn);
   });
 
-  currentRoute = routes[0];
+  currentRoute = routes[defaultIndex];
   displayRoute(currentRoute);
   document.getElementById('btn-start-ride').classList.remove('hidden');
   document.getElementById('btn-elevation').classList.remove('hidden');
 
   if (mode === 'waypoints') {
-    updateRouteStats(routes[0].length, routes[0].time, waypoints.length);
+    updateRouteStats(currentRoute.length, currentRoute.time, waypoints.length);
     hidePreviewLine();
   }
 
@@ -1014,12 +1046,14 @@ async function calculateWaypointRoute(silent = false, autoUpdate = false) {
   }
 
   const costingOptions = buildCostingOptions();
+  const level = waypointCurviness;
 
   try {
     if (autoUpdate) {
-      // Single quick route for premium auto-update
-      const pts = generateWaypointCurvyPath(waypoints, 50);
+      // Single quick route for premium auto-update using the selected curviness
+      const pts = generateWaypointCurvyPath(waypoints, level);
       const route = await fetchRoute(pts, costingOptions);
+      route.curvinessLevel = level;
       currentRoute = route;
       displayRoute(route, !silent);
       hidePreviewLine();
@@ -1029,17 +1063,18 @@ async function calculateWaypointRoute(silent = false, autoUpdate = false) {
       return;
     }
 
-    // Full route discovery for manual button
+    // Full route discovery for manual button — generate all 5 curviness levels
+    // so the user can compare, and default-select the curviness scale preference.
     hideRouteOptions();
     showToast('Analyzing routes...');
-    
+
     const routes = await discoverRoutes(null, null, waypoints);
-    
+
     if (routes.length === 0) {
       showToast('No routes found');
       return;
     }
-    
+
     if (routes.length === 1) {
       currentRoute = routes[0];
       displayRoute(routes[0]);
@@ -1050,8 +1085,8 @@ async function calculateWaypointRoute(silent = false, autoUpdate = false) {
       showToast('1 route found');
       return;
     }
-    
-    showRouteOptions(routes, 'waypoints');
+
+    showRouteOptions(routes, 'waypoints', level);
     speak(`${routes.length} routes found. Choose your preference.`);
   } catch (e) {
     showToast('Routing failed: ' + e.message);
@@ -1060,17 +1095,27 @@ async function calculateWaypointRoute(silent = false, autoUpdate = false) {
 
 function generateCurvyWaypoints(start, end, curviness) {
   if (curviness <= 0) return [];
-  const count = Math.max(1, Math.floor(curviness / 15));
-  const maxOffsetDeg = (curviness / 100) * 0.08;
+  // 0 -> 0 points, 25 -> 1, 50 -> 2, 75 -> 3, 100 -> 4 intermediate waypoints
+  const count = Math.max(1, Math.floor(curviness / 25));
+  const segmentKm = haversineDistance(start, end);
+  // Ensure a minimum lateral offset (so short routes still differ) while capping the detour.
+  const minOffsetKm = 0.5 + (curviness / 100) * 2.5; // 0.5 km to 3 km
+  const maxOffsetByPercent = segmentKm * (0.1 + (curviness / 100) * 0.4); // 10% to 50% of segment
+  const maxOffsetKm = Math.min(Math.max(minOffsetKm, maxOffsetByPercent), 30);
+  const maxOffsetDeg = maxOffsetKm / 111.32;
   const pts = [];
-  const angle = Math.atan2(end[1] - start[1], end[0] - start[0]);
+  const baseAngle = Math.atan2(end[1] - start[1], end[0] - start[0]);
 
   for (let i = 1; i <= count; i++) {
     const t = i / (count + 1);
     const lat = start[1] + (end[1] - start[1]) * t;
     const lng = start[0] + (end[0] - start[0]) * t;
-    const perp = angle + (Math.PI / 2) * (Math.random() > 0.5 ? 1 : -1);
-    const offset = maxOffsetDeg * (0.5 + Math.random() * 0.5);
+    // Deterministic alternating side so the same curviness always gives a similar route shape
+    const side = (i % 2 === 0) ? 1 : -1;
+    const perp = baseAngle + (Math.PI / 2) * side;
+    // Progressively larger offsets at higher curviness so each level is visibly different
+    const progress = i / (count + 1);
+    const offset = maxOffsetDeg * (0.4 + progress * 0.6);
     pts.push([lng + Math.cos(perp) * offset, lat + Math.sin(perp) * offset]);
   }
   return pts;
@@ -1191,27 +1236,33 @@ function decodePolyline(str, precision = 6) {
 }
 
 function displayRoute(route, fit = true) {
+  if (!route || !route.geometry || !route.geometry.coordinates || route.geometry.coordinates.length < 2) return;
   map.getSource(ROUTE_SOURCE).setData({
     type: 'Feature',
     geometry: route.geometry
   });
 
   if (fit) {
-    const bounds = route.geometry.coordinates.reduce((b, c) => {
-      if (!b) return new maplibregl.LngLatBounds(c, c);
-      b.extend(c);
-      return b;
-    }, null);
-    map.fitBounds(bounds, { padding: 60, maxZoom: 18 });
+    fitMapToRoute(route.geometry.coordinates);
   }
 
-  if (route.maneuvers.length) {
+  if (route.maneuvers && route.maneuvers.length) {
     document.getElementById('nav-banner').classList.remove('hidden');
     document.getElementById('nav-instruction').textContent = route.maneuvers[0].instruction;
     document.getElementById('nav-distance').textContent = route.maneuvers[0].length ? route.maneuvers[0].length.toFixed(1) + ' km' : '';
   } else {
     document.getElementById('nav-banner').classList.add('hidden');
   }
+}
+
+function fitMapToRoute(coordinates) {
+  if (!coordinates || coordinates.length < 2) return;
+  const bounds = coordinates.reduce((b, c) => {
+    if (!b) return new maplibregl.LngLatBounds(c, c);
+    b.extend(c);
+    return b;
+  }, null);
+  map.fitBounds(bounds, { padding: 80, maxZoom: 18, duration: 800, essential: true });
 }
 
 /* ---------- Waypoints & Preview Line ---------- */
@@ -2326,19 +2377,30 @@ function samplePoints(coords, max) {
 }
 
 async function fetchElevations(coords) {
-  const body = {
-    shape: coords.map(c => ({ lat: c[1], lon: c[0] })),
-    range: false
-  };
-  const res = await fetch(VALHALLA_HEIGHT_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  });
-  if (!res.ok) throw new Error('HTTP ' + res.status);
-  const data = await res.json();
-  if (!data.height || !data.height.length) throw new Error('No elevation data');
-  return data.height;
+  if (!coords || coords.length === 0) throw new Error('No coordinates for elevation');
+
+  const BATCH_SIZE = 100;
+  const allElevations = [];
+
+  for (let i = 0; i < coords.length; i += BATCH_SIZE) {
+    const batch = coords.slice(i, i + BATCH_SIZE);
+    const lats = batch.map(c => c[1]).join(',');
+    const lons = batch.map(c => c[0]).join(',');
+    const url = `${OPEN_METEO_ELEVATION_URL}?latitude=${lats}&longitude=${lons}`;
+
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('Elevation HTTP ' + res.status);
+    const data = await res.json();
+    if (!data.elevation || !Array.isArray(data.elevation)) {
+      throw new Error('No elevation data in response');
+    }
+    allElevations.push(...data.elevation);
+  }
+
+  if (allElevations.length !== coords.length) {
+    throw new Error('Elevation count mismatch');
+  }
+  return allElevations;
 }
 
 function cumulativeDistances(coords) {
@@ -3700,8 +3762,7 @@ async function fetchRoadsForBounds(bounds) {
   try {
     const response = await fetch('https://overpass-api.de/api/interpreter', {
       method: 'POST',
-      body: 'data=' + encodeURIComponent(query),
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+      body: new URLSearchParams({ data: query })
     });
 
     if (!response.ok) {
@@ -3759,11 +3820,13 @@ function addCurvyRoadsLayer() {
       type: 'geojson',
       data: { type: 'FeatureCollection', features: [] }
     });
-    
+
+    // Only highlight roads that are actually curvy/twisty. Straight roads are filtered out.
     map.addLayer({
       id: CURVY_ROADS_LAYER,
       type: 'line',
       source: CURVY_ROADS_SOURCE,
+      filter: ['>=', ['get', 'curviness'], 0.005],
       layout: {
         'line-join': 'round',
         'line-cap': 'round',
@@ -3774,15 +3837,14 @@ function addCurvyRoadsLayer() {
           'interpolate',
           ['linear'],
           ['get', 'curviness'],
-          0, '#00cc66',      // Green - straight
-          0.02, '#99cc00',   // Yellow-green
-          0.05, '#ffcc00',   // Yellow
-          0.1, '#ff9900',    // Orange
-          0.2, '#ff4400',    // Red-orange
-          0.5, '#ff0000'     // Red - very twisty
+          0.005, '#ffcc00',   // Yellow - mild curves
+          0.02, '#ff9900',   // Orange
+          0.05, '#ff6b00',   // CurveRunner orange
+          0.1, '#ff4400',    // Red-orange
+          0.2, '#ff0000'     // Red - very twisty
         ],
-        'line-width': 3,
-        'line-opacity': 0.8
+        'line-width': 4,
+        'line-opacity': 0.85
       }
     });
   }

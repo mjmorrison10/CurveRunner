@@ -143,6 +143,16 @@
 
       <div id="panel-waypoints" class="hidden">
         <p class="hint">Tap map to add points. <strong>Drag</strong> markers to move. <strong>Tap</strong> the dashed line to insert. Reorder with arrows.</p>
+        <div class="curviness-scale">
+          <label>Curviness</label>
+          <div class="curviness-options" id="curviness-options">
+            <button class="curviness-btn active" data-level="0" title="Straight">Straight</button>
+            <button class="curviness-btn" data-level="25" title="Slightly Curvy">Slight</button>
+            <button class="curviness-btn" data-level="50" title="Medium Curvy">Medium</button>
+            <button class="curviness-btn" data-level="75" title="More Curvy">More</button>
+            <button class="curviness-btn" data-level="100" title="Maximum Curvy">Max</button>
+          </div>
+        </div>
         <div id="route-options-waypoints" class="route-options-container hidden">
           <p class="hint">Choose your preferred route:</p>
           <div id="route-options-list-waypoints" class="route-options-list"></div>
