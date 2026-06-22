@@ -960,7 +960,7 @@ function showRouteOptions(routes, mode, preferredLevel = null) {
   document.getElementById('btn-elevation').classList.remove('hidden');
 
   if (mode === 'waypoints') {
-    updateRouteStats(currentRoute.length, currentRoute.time, waypoints.length);
+    updateRouteStats(currentRoute.length, currentRoute.time, waypoints.length, currentRoute.provider);
     hidePreviewLine();
   }
 
@@ -974,7 +974,7 @@ function selectRouteOption(route, mode) {
   document.getElementById('btn-start-ride').classList.remove('hidden');
   document.getElementById('btn-elevation').classList.remove('hidden');
   if (mode === 'waypoints') {
-    updateRouteStats(route.length, route.time, waypoints.length);
+    updateRouteStats(route.length, route.time, waypoints.length, route.provider);
   }
 }
 
@@ -1026,6 +1026,7 @@ async function calculateAutoRoute() {
     if (routes.length === 1) {
       currentRoute = routes[0];
       displayRoute(routes[0]);
+      updateRouteStats(routes[0].length, routes[0].time, 2, routes[0].provider);
       showToast('1 route found');
       speak('Route found.');
       return;
@@ -1057,7 +1058,7 @@ async function calculateWaypointRoute(silent = false, autoUpdate = false) {
       currentRoute = route;
       displayRoute(route, !silent);
       hidePreviewLine();
-      updateRouteStats(route.length, route.time, waypoints.length);
+      updateRouteStats(route.length, route.time, waypoints.length, route.provider);
       document.getElementById('btn-start-ride').classList.remove('hidden');
       document.getElementById('btn-elevation').classList.remove('hidden');
       return;
@@ -1079,7 +1080,7 @@ async function calculateWaypointRoute(silent = false, autoUpdate = false) {
       currentRoute = routes[0];
       displayRoute(routes[0]);
       hidePreviewLine();
-      updateRouteStats(routes[0].length, routes[0].time, waypoints.length);
+      updateRouteStats(routes[0].length, routes[0].time, waypoints.length, routes[0].provider);
       document.getElementById('btn-start-ride').classList.remove('hidden');
       document.getElementById('btn-elevation').classList.remove('hidden');
       showToast('1 route found');
@@ -1199,7 +1200,8 @@ async function fetchRouteOSRM(locations) {
     geometry: route.geometry,
     maneuvers: [],
     length: (route.distance || 0) / 1000,
-    time: (route.duration || 0)
+    time: (route.duration || 0),
+    provider: 'osrm'
   };
 }
 
@@ -1238,7 +1240,8 @@ function parseValhallaRoute(data) {
     geometry: { type: 'LineString', coordinates: allCoords },
     maneuvers: allManeuvers,
     length: data.trip.summary ? data.trip.summary.length : 0,
-    time: data.trip.summary ? data.trip.summary.time : 0
+    time: data.trip.summary ? data.trip.summary.time : 0,
+    provider: 'valhalla'
   };
 }
 
@@ -1441,6 +1444,7 @@ function clearWaypoints() {
   document.getElementById('btn-elevation').classList.add('hidden');
   document.getElementById('nav-banner').classList.add('hidden');
   document.getElementById('route-stats').classList.add('hidden');
+  document.getElementById('fallback-notice').classList.add('hidden');
   currentRoute = null;
 }
 
@@ -1545,13 +1549,27 @@ function updateWaypointList() {
   });
 }
 
-function updateRouteStats(lengthKm, timeSec, numPoints) {
+function updateRouteStats(lengthKm, timeSec, numPoints, provider = null) {
   const stats = document.getElementById('route-stats');
   stats.classList.remove('hidden');
   const min = Math.round(timeSec / 60);
   document.getElementById('stat-dist').textContent = lengthKm.toFixed(1) + ' km';
   document.getElementById('stat-time').textContent = min + ' min';
   document.getElementById('stat-points').textContent = numPoints + ' pts';
+
+  const providerBadge = document.getElementById('stat-provider');
+  const fallbackNotice = document.getElementById('fallback-notice');
+  if (provider === 'osrm') {
+    providerBadge.textContent = 'OSRM fallback';
+    providerBadge.classList.remove('hidden');
+    providerBadge.classList.add('osrm');
+    fallbackNotice.classList.remove('hidden');
+  } else {
+    providerBadge.textContent = '';
+    providerBadge.classList.add('hidden');
+    providerBadge.classList.remove('osrm');
+    fallbackNotice.classList.add('hidden');
+  }
 }
 
 /* ---------- Voice Navigation ---------- */
@@ -2272,6 +2290,7 @@ function importGPX(file) {
       displayRoute(route);
       document.getElementById('btn-start-ride').classList.remove('hidden');
       document.getElementById('btn-elevation').classList.remove('hidden');
+      document.getElementById('fallback-notice').classList.add('hidden');
       showToast('GPX imported. ' + route.length.toFixed(1) + ' km');
     } catch (err) {
       showToast('Failed to import GPX');
