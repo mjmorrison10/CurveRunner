@@ -3089,14 +3089,26 @@ async function signInWithGoogle() {
   if (!(await ensureFirebaseReady())) return;
   const provider = new firebase.auth.GoogleAuthProvider();
   try {
-    // Mark that we are starting a redirect sign-in so the SDK loads on the return trip.
-    sessionStorage.setItem('curveRunner_signingIn', 'true');
-    await firebaseAuth.signInWithRedirect(provider);
-    // Page reloads after redirect; getRedirectResult handles the rest
+    // Try popup first — it generally handles third-party cookie / extension blocking better.
+    await firebaseAuth.signInWithPopup(provider);
+    showToast('Signed in with Google');
   } catch (e) {
-    sessionStorage.removeItem('curveRunner_signingIn');
-    console.error('Google redirect sign-in error', e);
-    showToast('Google sign-in failed: ' + e.message);
+    console.error('Google sign-in error', e);
+    if (e.code === 'auth/popup-blocked' || e.code === 'auth/popup-closed-by-user' || e.code === 'auth/cancelled-popup-request') {
+      // Popup was blocked by the browser or an extension. Fall back to redirect.
+      sessionStorage.setItem('curveRunner_signingIn', 'true');
+      try {
+        await firebaseAuth.signInWithRedirect(provider);
+      } catch (redirectErr) {
+        sessionStorage.removeItem('curveRunner_signingIn');
+        console.error('Google redirect fallback error', redirectErr);
+        showToast('Sign-in blocked. Try disabling extensions for this site.');
+      }
+    } else if (e.message && e.message.includes('network')) {
+      showToast('Sign-in blocked by network/extension. Try disabling your ad blocker or privacy tool.');
+    } else {
+      showToast('Google sign-in failed: ' + e.message);
+    }
   }
 }
 

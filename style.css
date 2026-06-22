@@ -581,6 +581,14 @@ input[type="checkbox"] { width: 22px; height: 22px; accent-color: var(--accent);
   margin-bottom: 16px;
 }
 
+.welcome-extension-note {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  text-align: center;
+  margin: -4px 0 2px;
+  line-height: 1.4;
+}
+
 .welcome-btn {
   width: 100%;
   padding: 14px;
