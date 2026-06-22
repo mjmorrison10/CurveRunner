@@ -1,4 +1,4 @@
-const CACHE_NAME = 'curve-runner-v8';
+const CACHE_NAME = 'curve-runner-v9';
 const APP_ASSETS = [
   './',
   './index.html',
@@ -78,8 +78,9 @@ self.addEventListener('fetch', (e) => {
   if (e.request.mode === 'navigate') {
     e.respondWith(
       (async () => {
-        const preload = e.preloadResponse;
         try {
+          // preloadResponse is a Promise<Response | undefined>; await it before using.
+          const preload = await e.preloadResponse;
           const netResp = preload || (await fetch(e.request));
           const cache = await caches.open(CACHE_NAME);
           cache.put('./index.html', netResp.clone()).catch(() => {});
