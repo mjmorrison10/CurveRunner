@@ -10,6 +10,9 @@
   "theme_color": "#1a1a1a",
   "orientation": "portrait",
   "categories": ["navigation", "travel", "lifestyle"],
+  "lang": "en",
+  "dir": "ltr",
+  "id": "curverunner",
   "icons": [
     {
       "src": "icons/icon-192.png",
@@ -34,6 +37,38 @@
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "maskable"
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "screenshots/route.png",
+      "sizes": "1280x720",
+      "type": "image/png",
+      "form_factor": "wide",
+      "label": "Find twisty motorcycle routes"
+    },
+    {
+      "src": "screenshots/nav.png",
+      "sizes": "1280x720",
+      "type": "image/png",
+      "form_factor": "wide",
+      "label": "Ride navigation with large, glanceable directions"
+    },
+    {
+      "src": "screenshots/mobile-route.png",
+      "sizes": "750x1334",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "Discover curvy roads on your phone"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Find Curvy Route",
+      "short_name": "Route",
+      "description": "Find a twisty route nearby",
+      "url": "./?action=route",
+      "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }]
     }
   ]
 }

@@ -825,3 +825,265 @@ input[type="checkbox"] { width: 22px; height: 22px; accent-color: var(--accent);
   .welcome-tagline { margin-bottom: 18px; }
   .welcome-benefits { margin: 12px 0 16px; padding: 12px; }
 }
+
+/* ===== Glove & Sunlight / Riding Mode UX ===== */
+* {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+input, textarea, [contenteditable] {
+  -webkit-user-select: auto;
+  user-select: auto;
+}
+
+body.riding-mode #bottom-panel,
+body.riding-mode #top-bar .logo,
+body.riding-mode .actions .icon-btn:not(.riding-visible) {
+  display: none !important;
+}
+body.riding-mode #top-bar {
+  background: transparent;
+  border-bottom: none;
+  padding: calc(6px + env(safe-area-inset-top)) 12px 6px 12px;
+}
+body.riding-mode #map {
+  top: 0;
+  bottom: 0;
+}
+
+#btn-riding-mode {
+  display: none;
+}
+body.is-riding #btn-riding-mode {
+  display: flex;
+}
+
+#riding-mode-bar {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  z-index: 25;
+  display: none;
+  gap: 12px;
+  pointer-events: none;
+}
+body.riding-mode #riding-mode-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+}
+
+.riding-btn {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: rgba(26,26,26,0.95);
+  border: 2px solid var(--accent);
+  color: var(--accent);
+  font-size: 1.6rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  pointer-events: auto;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.5);
+  transition: transform 0.15s, background 0.15s;
+}
+.riding-btn:active {
+  transform: scale(0.92);
+  background: var(--accent);
+  color: #fff;
+}
+.riding-btn.danger {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+.riding-btn.danger:active {
+  background: var(--danger);
+  color: #fff;
+}
+
+#riding-hud {
+  position: absolute;
+  top: calc(12px + env(safe-area-inset-top));
+  left: 12px;
+  right: 12px;
+  z-index: 15;
+  display: none;
+  pointer-events: none;
+}
+body.riding-mode #riding-hud {
+  display: block;
+}
+
+.riding-hud-card {
+  background: rgba(0,0,0,0.85);
+  border: 2px solid var(--accent);
+  border-radius: 16px;
+  padding: 14px 18px;
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+  pointer-events: auto;
+}
+.riding-hud-card .next-turn {
+  font-size: 1.1rem;
+  font-weight: 800;
+  color: var(--accent);
+  line-height: 1.2;
+  margin-bottom: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.riding-hud-card .distance {
+  font-size: 2.6rem;
+  font-weight: 900;
+  line-height: 1;
+}
+.riding-hud-card .distance small {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text-dim);
+  margin-left: 4px;
+}
+.riding-hud-card .road {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #fff;
+  margin-top: 6px;
+}
+
+#riding-speed {
+  position: absolute;
+  top: calc(12px + env(safe-area-inset-top));
+  right: 12px;
+  z-index: 15;
+  display: none;
+  pointer-events: none;
+}
+body.riding-mode #riding-speed {
+  display: block;
+}
+
+.riding-speed-card {
+  background: rgba(0,0,0,0.85);
+  border: 2px solid var(--accent);
+  border-radius: 16px;
+  padding: 10px 16px;
+  text-align: center;
+  min-width: 90px;
+}
+.riding-speed-card .value {
+  font-size: 2.8rem;
+  font-weight: 900;
+  color: var(--accent);
+  line-height: 1;
+}
+.riding-speed-card .label {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+#offline-indicator {
+  position: absolute;
+  top: calc(64px + env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 60;
+  background: rgba(0,0,0,0.85);
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  padding: 6px 14px;
+  border-radius: 20px;
+  font-size: 0.85rem;
+  font-weight: 700;
+  display: none;
+  pointer-events: none;
+}
+#offline-indicator.visible {
+  display: block;
+}
+
+#route-preview-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+#route-preview-card .metric {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.9rem;
+  margin-bottom: 6px;
+}
+#route-preview-card .metric span:last-child {
+  color: var(--accent);
+  font-weight: 700;
+}
+#route-preview-card .mini-elevation {
+  height: 60px;
+  width: 100%;
+  background: var(--bg);
+  border-radius: 8px;
+  margin-top: 8px;
+}
+
+.curviness-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.curviness-badge.straight { background: #444; color: #aaa; }
+.curviness-badge.slight { background: #5a6b00; color: #e6ff8a; }
+.curviness-badge.medium { background: #8a6d00; color: #ffe88a; }
+.curviness-badge.more { background: #a44a00; color: #ffd6a3; }
+.curviness-badge.max { background: #7a0000; color: #ff9999; }
+
+.empty-state {
+  text-align: center;
+  padding: 24px 16px;
+  color: var(--text-dim);
+}
+.empty-state .icon {
+  font-size: 2.5rem;
+  margin-bottom: 10px;
+  opacity: 0.6;
+}
+.empty-state .title {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+.empty-state p {
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+.loading-skeleton {
+  background: linear-gradient(90deg, var(--panel) 25%, var(--bg) 50%, var(--panel) 75%);
+  background-size: 200% 100%;
+  animation: skeleton 1.2s infinite;
+  border-radius: 8px;
+}
+@keyframes skeleton {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+@media (max-width: 400px) {
+  .riding-btn { width: 58px; height: 58px; font-size: 1.4rem; }
+  .riding-hud-card .distance { font-size: 2.2rem; }
+  .riding-speed-card .value { font-size: 2.4rem; }
+}

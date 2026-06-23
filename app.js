@@ -33,6 +33,7 @@ let friendMarkers = {};
 let replayMode = 'speed';
 let mapBearingMode = 'north'; // 'north' or 'heading'
 let deviceOrientationHeading = 0;
+let ridingMode = false;      // glove-friendly, high-contrast navigation view
 
 // Curviness scale for waypoint routing (0-100)
 let waypointCurviness = parseInt(localStorage.getItem('curveRunner_curviness') || '0', 10);
@@ -47,6 +48,44 @@ const CURVINESS_LEVELS = [
 // --- Performance: navigation cursor (avoid O(n) scan of route on every GPS tick) ---
 let navCursorIdx = 0;      // last known nearest index on the active nav route
 let origCursorIdx = 0;     // last known nearest index on the original planned route
+
+// --- GPS smoothing (exponential moving average + accuracy-based weighting) ---
+let gpsSmoothed = null;    // { lon, lat, speed, accuracy, time }
+const GPS_ALPHA = 0.35;    // smoothing factor (lower = smoother, more lag)
+function smoothGpsPoint(raw) {
+  if (!gpsSmoothed || raw.accuracy === 0) {
+    gpsSmoothed = raw;
+    return raw;
+  }
+  // Trust high-accuracy fixes more; alpha scales inversely with accuracy radius.
+  const trust = Math.min(1, 50 / Math.max(raw.accuracy, 5));
+  const alpha = Math.max(0.15, Math.min(0.8, GPS_ALPHA * trust));
+  const smoothed = {
+    lon: gpsSmoothed.lon + (raw.lon - gpsSmoothed.lon) * alpha,
+    lat: gpsSmoothed.lat + (raw.lat - gpsSmoothed.lat) * alpha,
+    speed: raw.speed !== null ? gpsSmoothed.speed + (raw.speed - gpsSmoothed.speed) * alpha : gpsSmoothed.speed,
+    accuracy: raw.accuracy,
+    time: raw.time
+  };
+  gpsSmoothed = smoothed;
+  return smoothed;
+}
+function resetGpsSmoother() {
+  gpsSmoothed = null;
+}
+
+// --- Online/offline state ---
+function updateOfflineIndicator() {
+  const el = document.getElementById('offline-indicator');
+  if (!el) return;
+  if (!navigator.onLine) {
+    el.classList.add('visible');
+  } else {
+    el.classList.remove('visible');
+  }
+}
+window.addEventListener('online', updateOfflineIndicator);
+window.addEventListener('offline', updateOfflineIndicator);
 
 // --- Screen Wake Lock (keeps the display on during a ride; critical for nav) ---
 let wakeLock = null;
@@ -128,6 +167,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     initUI();
     loadHistory();
     loadPocketCalibration();
+    updateOfflineIndicator();
     initFirebase();
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('sw.js').then(reg => {
@@ -522,6 +562,12 @@ function initUI() {
   document.getElementById('btn-stop-group').addEventListener('click', stopGroupRideSharing);
   document.getElementById('btn-photo').addEventListener('click', dropPhotoWaypoint);
   document.getElementById('btn-compass').addEventListener('click', toggleMapBearingMode);
+  document.getElementById('btn-riding-mode').addEventListener('click', toggleRidingMode);
+  document.getElementById('btn-riding-photo').addEventListener('click', dropPhotoWaypoint);
+  document.getElementById('btn-riding-overview').addEventListener('click', () => {
+    if (currentRoute) fitMapToRoute(currentRoute.geometry.coordinates);
+  });
+  document.getElementById('btn-riding-stop').addEventListener('click', stopRide);
   document.getElementById('photo-capture').addEventListener('change', handlePhotoCapture);
   document.getElementById('btn-replay-lean').addEventListener('click', toggleReplayLeanMode);
   document.getElementById('btn-replay-curves').addEventListener('click', () => {
@@ -921,6 +967,17 @@ function showRouteOptions(routes, mode, preferredLevel = null) {
   container.classList.remove('hidden');
   list.innerHTML = '';
 
+  if (routes.length === 0) {
+    list.innerHTML = `
+      <div class="empty-state">
+        <div class="icon">🛣️</div>
+        <div class="title">No routes found</div>
+        <p>Try moving your points closer to roads, or adjust the search area.</p>
+      </div>
+    `;
+    return;
+  }
+
   const names = getRouteOptionNames(routes.length);
 
   // Pick the default route: the one closest to the preferred curviness level, or the first.
@@ -1292,6 +1349,8 @@ function displayRoute(route, fit = true) {
   } else {
     document.getElementById('nav-banner').classList.add('hidden');
   }
+
+  updateRoutePreviewCard(route);
 }
 
 function fitMapToRoute(coordinates) {
@@ -1445,6 +1504,7 @@ function clearWaypoints() {
   document.getElementById('nav-banner').classList.add('hidden');
   document.getElementById('route-stats').classList.add('hidden');
   document.getElementById('fallback-notice').classList.add('hidden');
+  hideRoutePreviewCard();
   currentRoute = null;
 }
 
@@ -1668,6 +1728,9 @@ async function startRide() {
   navFollowMode = true;
   updateNavModeUI();
   document.getElementById('nav-mode-toggle').classList.remove('hidden');
+  document.body.classList.add('is-riding');
+  // Auto-enable riding mode for a glove-friendly view
+  if (!ridingMode) toggleRidingMode();
 
   // Center map on rider for immediate nav feel
   map.easeTo({ center: userCoords, zoom: 18, duration: 600 });
@@ -1791,6 +1854,8 @@ function stopRide() {
   document.getElementById('bottom-panel').classList.remove('collapsed');
   document.getElementById('nav-banner').classList.add('hidden');
   document.getElementById('nav-mode-toggle').classList.add('hidden');
+  document.body.classList.remove('is-riding');
+  if (ridingMode) toggleRidingMode();
 
   originalRoute = null;
   navRoute = null;
@@ -1802,6 +1867,7 @@ function stopRide() {
   nextStepIdx = 0;
   navFollowMode = true;
   announceState = {};
+  resetGpsSmoother();
 }
 
 function cancelRide() {
@@ -1820,6 +1886,8 @@ function cancelRide() {
   document.getElementById('nav-banner').classList.add('hidden');
   document.getElementById('nav-mode-toggle').classList.add('hidden');
   document.getElementById('bottom-panel').classList.remove('collapsed');
+  document.body.classList.remove('is-riding');
+  if (ridingMode) toggleRidingMode();
 
   stopGroupRideSharing();
   // Clear route line from map but keep waypoints for replanning
@@ -1835,16 +1903,32 @@ function cancelRide() {
   nextStepIdx = 0;
   navFollowMode = true;
   announceState = {};
+  resetGpsSmoother();
 }
 
 function handleRidePosition(position) {
-  const coords = [position.coords.longitude, position.coords.latitude];
+  const raw = {
+    lon: position.coords.longitude,
+    lat: position.coords.latitude,
+    speed: position.coords.speed !== null ? position.coords.speed * 3.6 : null,
+    accuracy: position.coords.accuracy || 50,
+    time: Date.now()
+  };
+
+  // Smooth raw GPS to prevent map jumping on poor fixes
+  const smoothed = smoothGpsPoint(raw);
+  const coords = [smoothed.lon, smoothed.lat];
   const alt = position.coords.altitude || 0;
-  const speed = position.coords.speed || 0;
-  const speedKmh = speed * 3.6;
+  const speedKmh = smoothed.speed || 0;
 
   const heading = position.coords.heading !== null ? position.coords.heading : deviceOrientationHeading;
   updateUserArrow(coords, heading);
+
+  // GPS signal loss / stale fix warning
+  const ageSec = (Date.now() - smoothed.time) / 1000;
+  if (raw.accuracy > 100 || ageSec > 10) {
+    showToast('GPS signal weak — last known position shown');
+  }
 
   const point = {
     lon: coords[0],
@@ -1868,6 +1952,7 @@ function handleRidePosition(position) {
   document.getElementById('hud-speed').textContent = Math.round(speedKmh);
   document.getElementById('hud-dist').textContent = rideData.distance.toFixed(1);
   document.getElementById('hud-lean').textContent = Math.round(leanAngle) + '°';
+  updateRidingSpeed(speedKmh);
 
   // Follow rider in nav mode — smooth, jitter-resistant camera.
   if (navFollowMode) {
@@ -1971,6 +2056,7 @@ function updateNav(position) {
   const manCoord = coords[idx];
   const dist = haversineDistance(userCoords, manCoord);
   document.getElementById('nav-distance').textContent = (dist * 1000).toFixed(0) + ' m';
+  updateRidingHud(man.instruction, dist, man.street_name || '');
 
   if (!announceState[nextStepIdx]) announceState[nextStepIdx] = {};
   const state = announceState[nextStepIdx];
@@ -2146,6 +2232,41 @@ function toggleMapBearingMode() {
   }
 }
 
+function toggleRidingMode() {
+  ridingMode = !ridingMode;
+  document.body.classList.toggle('riding-mode', ridingMode);
+  const btn = document.getElementById('btn-riding-mode');
+  if (btn) btn.classList.toggle('active', ridingMode);
+  if (ridingMode) {
+    showToast('🏍️ Riding mode: large controls, high contrast');
+  } else {
+    showToast('Planning mode');
+  }
+}
+
+function updateRidingHud(nextInstruction, distanceKm, roadName = '') {
+  const turnEl = document.getElementById('riding-next-turn');
+  const distEl = document.getElementById('riding-next-dist');
+  const unitEl = document.getElementById('riding-next-unit');
+  const roadEl = document.getElementById('riding-road-name');
+  if (turnEl) turnEl.textContent = nextInstruction || 'Continue';
+  if (roadEl) roadEl.textContent = roadName || '';
+  if (distEl) {
+    if (distanceKm < 1) {
+      distEl.textContent = Math.round(distanceKm * 1000).toString();
+      if (unitEl) unitEl.textContent = 'm';
+    } else {
+      distEl.textContent = distanceKm.toFixed(1);
+      if (unitEl) unitEl.textContent = 'km';
+    }
+  }
+}
+
+function updateRidingSpeed(speedKmh) {
+  const el = document.getElementById('riding-speed-value');
+  if (el) el.textContent = Math.round(speedKmh);
+}
+
 function startTimer() {
   rideTimerInterval = setInterval(() => {
     const elapsed = Math.floor((Date.now() - rideData.startTime) / 1000);
@@ -2164,6 +2285,47 @@ function haversineDistance(a, b) {
   const a1 = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.sin(dLon / 2) * Math.sin(dLon / 2) * Math.cos(lat1) * Math.cos(lat2);
   const c = 2 * Math.atan2(Math.sqrt(a1), Math.sqrt(1 - a1));
   return R * c;
+}
+
+function lonLatToTile(lon, lat, zoom) {
+  const n = Math.pow(2, zoom);
+  const x = Math.floor((lon + 180) / 360 * n);
+  const y = Math.floor((1 - Math.log(Math.tan(lat * Math.PI / 180) + 1 / Math.cos(lat * Math.PI / 180)) / Math.PI) / 2 * n);
+  return { x, y };
+}
+
+function getTileUrlsForRoute(coords, minZoom = 10, maxZoom = 16) {
+  const urls = new Set();
+  // Compute bounding box of route
+  let minLon = Infinity, maxLon = -Infinity, minLat = Infinity, maxLat = -Infinity;
+  for (const c of coords) {
+    minLon = Math.min(minLon, c[0]);
+    maxLon = Math.max(maxLon, c[0]);
+    minLat = Math.min(minLat, c[1]);
+    maxLat = Math.max(maxLat, c[1]);
+  }
+  // Expand slightly to cover surrounding context
+  const pad = 0.02; // ~2km
+  minLon -= pad; maxLon += pad; minLat -= pad; maxLat += pad;
+  for (let z = minZoom; z <= maxZoom; z++) {
+    const minTile = lonLatToTile(minLon, maxLat, z); // NW
+    const maxTile = lonLatToTile(maxLon, minLat, z); // SE
+    for (let x = minTile.x; x <= maxTile.x; x++) {
+      for (let y = minTile.y; y <= maxTile.y; y++) {
+        urls.add(`https://tile.openstreetmap.org/${z}/${x}/${y}.png`);
+      }
+    }
+  }
+  return Array.from(urls);
+}
+
+function cacheRouteTiles(coords) {
+  if (!navigator.serviceWorker || !navigator.serviceWorker.controller) return;
+  const tileUrls = getTileUrlsForRoute(coords);
+  navigator.serviceWorker.controller.postMessage({
+    type: 'CACHE_ROUTE_TILES',
+    tileUrls: tileUrls.slice(0, 300) // cap to avoid overwhelming the SW
+  });
 }
 
 /* ---------- Sensors ---------- */
@@ -2350,7 +2512,10 @@ function saveCurrentRouteOffline() {
     time: currentRoute.time,
     created: new Date().toISOString()
   });
-  tx.oncomplete = () => showToast('Route saved offline');
+  tx.oncomplete = () => {
+    cacheRouteTiles(currentRoute.geometry.coordinates);
+    showToast('Route saved offline + tiles downloading');
+  };
 }
 
 function loadSavedRoutes() {
@@ -3775,6 +3940,85 @@ function showPhotosModal(photos) {
 }
 
 /* ---------- Curvy Roads Layer ---------- */
+
+function calculateRouteCurviness(coordinates) {
+  if (!coordinates || coordinates.length < 3) return 0;
+  let totalAngleChange = 0;
+  let totalLength = 0;
+  for (let i = 1; i < coordinates.length - 1; i++) {
+    const prev = coordinates[i - 1];
+    const curr = coordinates[i];
+    const next = coordinates[i + 1];
+    const bearing1 = Math.atan2(curr[0] - prev[0], curr[1] - prev[1]);
+    const bearing2 = Math.atan2(next[0] - curr[0], next[1] - curr[1]);
+    let angleChange = Math.abs(bearing2 - bearing1);
+    if (angleChange > Math.PI) angleChange = 2 * Math.PI - angleChange;
+    totalAngleChange += angleChange;
+    const scale = Math.cos(curr[1] * Math.PI / 180) * 111320;
+    const segLength = Math.sqrt(
+      Math.pow((next[0] - prev[0]) * scale, 2) +
+      Math.pow((next[1] - prev[1]) * 111320, 2)
+    );
+    totalLength += segLength;
+  }
+  if (totalLength < 10) return 0;
+  return totalAngleChange / totalLength;
+}
+
+function getCurvinessBadge(curviness) {
+  if (curviness < 0.005) return { label: 'Straight', class: 'straight' };
+  if (curviness < 0.015) return { label: 'Slight', class: 'slight' };
+  if (curviness < 0.03) return { label: 'Medium', class: 'medium' };
+  if (curviness < 0.06) return { label: 'Twisty', class: 'more' };
+  return { label: 'Max', class: 'max' };
+}
+
+function getCurvinessScore(curviness) {
+  if (curviness < 0.005) return 1;
+  if (curviness < 0.015) return 2;
+  if (curviness < 0.03) return 3;
+  if (curviness < 0.06) return 4;
+  return 5;
+}
+
+function countCurves(coordinates) {
+  if (!coordinates || coordinates.length < 3) return 0;
+  let count = 0;
+  for (let i = 1; i < coordinates.length - 1; i++) {
+    const prev = coordinates[i - 1];
+    const curr = coordinates[i];
+    const next = coordinates[i + 1];
+    const bearing1 = Math.atan2(curr[0] - prev[0], curr[1] - prev[1]);
+    const bearing2 = Math.atan2(next[0] - curr[0], next[1] - curr[1]);
+    let angleChange = Math.abs(bearing2 - bearing1);
+    if (angleChange > Math.PI) angleChange = 2 * Math.PI - angleChange;
+    if (angleChange > 0.35) count++; // > 20 degrees
+  }
+  return count;
+}
+
+function updateRoutePreviewCard(route) {
+  if (!route) return;
+  const card = document.getElementById('route-preview-card');
+  if (!card) return;
+  const curviness = calculateRouteCurviness(route.geometry.coordinates);
+  const badge = getCurvinessBadge(curviness);
+  const curves = countCurves(route.geometry.coordinates);
+  const cEl = document.getElementById('preview-curviness');
+  if (cEl) {
+    cEl.innerHTML = `<span class="curviness-badge ${badge.class}">${badge.label}</span>`;
+  }
+  const cuEl = document.getElementById('preview-curves');
+  if (cuEl) cuEl.textContent = curves.toString();
+  const eEl = document.getElementById('preview-elevation');
+  if (eEl) eEl.textContent = 'Tap Elevation';
+  card.classList.remove('hidden');
+}
+
+function hideRoutePreviewCard() {
+  const card = document.getElementById('route-preview-card');
+  if (card) card.classList.add('hidden');
+}
 
 function calculateCurviness(coordinates) {
   if (!coordinates || coordinates.length < 3) return 0;

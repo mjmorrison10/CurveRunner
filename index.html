@@ -82,6 +82,7 @@
       <button id="btn-offline" class="icon-btn" title="Save Offline" aria-label="Save route offline">📴</button>
       <button id="btn-history" class="icon-btn" title="Ride History" aria-label="Open ride history">📜</button>
       <button id="btn-curvy-roads" class="icon-btn" title="Show Curvy Roads" aria-label="Toggle curvy roads overlay">🌀</button>
+      <button id="btn-riding-mode" class="icon-btn riding-visible" title="Riding Mode" aria-label="Toggle riding mode">🏍️</button>
       <button id="btn-settings" class="icon-btn" title="Settings" aria-label="Open settings">⚙️</button>
       <button id="btn-pocket" class="icon-btn" title="Pocket Mode" aria-label="Calibrate pocket mode">🤏</button>
     </div>
@@ -95,6 +96,29 @@
       <div id="nav-instruction">Navigate safely</div>
       <div id="nav-distance" aria-label="Distance to next maneuver">--</div>
     </div>
+
+    <div id="riding-hud" class="hidden">
+      <div class="riding-hud-card">
+        <div class="next-turn" id="riding-next-turn">Next turn</div>
+        <div class="distance"><span id="riding-next-dist">--</span><small id="riding-next-unit">km</small></div>
+        <div class="road" id="riding-road-name"></div>
+      </div>
+    </div>
+
+    <div id="riding-speed" class="hidden">
+      <div class="riding-speed-card">
+        <div class="value" id="riding-speed-value">0</div>
+        <div class="label">km/h</div>
+      </div>
+    </div>
+
+    <div id="riding-mode-bar">
+      <button id="btn-riding-photo" class="riding-btn" title="Photo" aria-label="Drop photo">📷</button>
+      <button id="btn-riding-overview" class="riding-btn" title="Overview" aria-label="Show whole route">🗺️</button>
+      <button id="btn-riding-stop" class="riding-btn danger" title="Stop" aria-label="Stop ride">⏹</button>
+    </div>
+
+    <div id="offline-indicator">📵 Offline — cached data</div>
 
     <div id="ride-hud" class="hidden">
       <div class="hud-item"><span id="hud-speed">0</span><small>km/h</small></div>
@@ -170,6 +194,12 @@
         </div>
         <div id="fallback-notice" class="fallback-notice hidden">
           ⚠️ Valhalla routing is unavailable. Using OSRM fallback (driving profile).
+        </div>
+        <div id="route-preview-card" class="hidden">
+          <div class="metric"><span>Curviness</span><span id="preview-curviness">--</span></div>
+          <div class="metric"><span>Est. curves</span><span id="preview-curves">--</span></div>
+          <div class="metric"><span>Elevation range</span><span id="preview-elevation">--</span></div>
+          <div class="mini-elevation" id="mini-elevation"></div>
         </div>
         <ul id="waypoint-list"></ul>
         <div class="row-btns">

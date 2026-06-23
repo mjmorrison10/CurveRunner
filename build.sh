@@ -15,10 +15,10 @@ if ! command -v terser >/dev/null 2>&1; then
 fi
 
 echo "▸ Minifying app.js -> app.min.js"
-npx terser app.js -o app.min.js --compress --mangle --format ascii_only=true
+./node_modules/.bin/terser app.js -o app.min.js --compress --mangle --format ascii_only=true
 
 echo "▸ Minifying style.css -> style.min.css"
-npx cleancss -O2 style.css -o style.min.css
+./node_modules/.bin/cleancss -O2 style.css -o style.min.css
 
 echo "▸ Verifying"
 node --check app.min.js && echo "  app.min.js  OK" || { echo "  app.min.js  FAILED"; exit 1; }
