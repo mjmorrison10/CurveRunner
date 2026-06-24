@@ -114,6 +114,9 @@ let curvyRoadsBackoff = 0;   // ms to wait after a 429
 let curvyRoadsLastFetch = 0; // timestamp of last fetch
 let curvyRoadsPending = false; // prevent concurrent fetches
 const CURVY_ROADS_MIN_ZOOM = 11;
+const CURVY_ROADS_TILE_ZOOM = 12; // tile grid used for incremental fetching
+let curvyRoadsFetchedTiles = new Set(); // keys of tiles already fetched this session
+let curvyRoadsFeatures = []; // accumulated GeoJSON features
 
 let userArrowMarker = null;
 let originalRoute = null;
@@ -4184,6 +4187,29 @@ function addCurvyRoadsLayer() {
   }
 }
 
+function getViewportTiles() {
+  if (!map) return [];
+  const bounds = map.getBounds();
+  const nw = lonLatToTile(bounds.getWest(), bounds.getNorth(), CURVY_ROADS_TILE_ZOOM);
+  const se = lonLatToTile(bounds.getEast(), bounds.getSouth(), CURVY_ROADS_TILE_ZOOM);
+  const tiles = [];
+  for (let x = nw.x; x <= se.x; x++) {
+    for (let y = nw.y; y <= se.y; y++) {
+      tiles.push({ x, y, z: CURVY_ROADS_TILE_ZOOM });
+    }
+  }
+  return tiles;
+}
+
+function tileToBounds(x, y, z) {
+  const n = Math.pow(2, z);
+  const west = x / n * 360 - 180;
+  const east = (x + 1) / n * 360 - 180;
+  const lat1 = Math.atan(Math.sinh(Math.PI * (1 - 2 * (y + 1) / n))) * 180 / Math.PI;
+  const lat2 = Math.atan(Math.sinh(Math.PI * (1 - 2 * y / n))) * 180 / Math.PI;
+  return [west, lat1, east, lat2]; // [west, south, east, north]
+}
+
 async function updateCurvyRoads() {
   if (!map || !curvyRoadsEnabled || curvyRoadsPending) return;
   if (map.getZoom() < CURVY_ROADS_MIN_ZOOM) return;
@@ -4191,38 +4217,48 @@ async function updateCurvyRoads() {
   const now = Date.now();
   const waitUntil = curvyRoadsLastFetch + curvyRoadsBackoff;
   if (now < waitUntil) {
-    // Still in cooldown — schedule a retry when the backoff expires.
     curvyRoadsDebounce = setTimeout(updateCurvyRoads, waitUntil - now + 100);
     return;
   }
 
+  const tiles = getViewportTiles().filter(t => !curvyRoadsFetchedTiles.has(`${t.z}/${t.x}/${t.y}`));
+  if (tiles.length === 0) return;
+
+  // Limit how many new tiles we fetch in one burst to stay polite to Overpass.
+  const tilesToFetch = tiles.slice(0, 6);
   curvyRoadsPending = true;
   curvyRoadsLastFetch = now;
 
-  const bounds = map.getBounds();
-  const boundsArray = [
-    bounds.getWest(),
-    bounds.getSouth(),
-    bounds.getEast(),
-    bounds.getNorth()
-  ];
-
   try {
-    const geojson = await fetchRoadsForBounds(boundsArray);
+    for (const t of tilesToFetch) {
+      const key = `${t.z}/${t.x}/${t.y}`;
+      if (curvyRoadsFetchedTiles.has(key)) continue;
+      const bounds = tileToBounds(t.x, t.y, t.z);
+      const geojson = await fetchRoadsForBounds(bounds);
+      if (geojson && geojson.features) {
+        curvyRoadsFeatures.push(...geojson.features);
+        curvyRoadsFetchedTiles.add(key);
+      }
+    }
     const source = map.getSource(CURVY_ROADS_SOURCE);
     if (source) {
-      source.setData(geojson);
+      source.setData({ type: 'FeatureCollection', features: curvyRoadsFeatures });
     }
   } catch (e) {
     console.error('Error updating curvy roads:', e);
   } finally {
     curvyRoadsPending = false;
   }
+
+  // If there are more tiles left, schedule another batch.
+  const remaining = getViewportTiles().filter(t => !curvyRoadsFetchedTiles.has(`${t.z}/${t.x}/${t.y}`));
+  if (remaining.length > 0) {
+    curvyRoadsDebounce = setTimeout(updateCurvyRoads, Math.max(2000, curvyRoadsBackoff + 500));
+  }
 }
 
 function debouncedUpdateCurvyRoads() {
   if (curvyRoadsDebounce) clearTimeout(curvyRoadsDebounce);
-  // Wait longer than before (2s) and skip updates while the map is still animating.
   curvyRoadsDebounce = setTimeout(() => {
     if (!map || !map.isMoving()) {
       updateCurvyRoads();
@@ -4235,6 +4271,7 @@ function debouncedUpdateCurvyRoads() {
 function toggleCurvyRoads() {
   curvyRoadsEnabled = !curvyRoadsEnabled;
   const btn = document.getElementById('btn-curvy-roads');
+  const source = map.getSource(CURVY_ROADS_SOURCE);
 
   if (curvyRoadsEnabled) {
     btn.classList.add('active');
@@ -4251,8 +4288,14 @@ function toggleCurvyRoads() {
     if (map.getLayer(CURVY_ROADS_LAYER)) {
       map.setLayoutProperty(CURVY_ROADS_LAYER, 'visibility', 'none');
     }
-    // Clear any pending fetch so disabling stops network traffic immediately.
     if (curvyRoadsDebounce) clearTimeout(curvyRoadsDebounce);
+    // Reset accumulated state so next toggle starts fresh.
+    curvyRoadsFetchedTiles.clear();
+    curvyRoadsFeatures = [];
+    curvyRoadsBackoff = 0;
+    if (source) {
+      source.setData({ type: 'FeatureCollection', features: [] });
+    }
   }
 }
 
