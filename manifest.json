@@ -39,29 +39,6 @@
       "purpose": "maskable"
     }
   ],
-  "screenshots": [
-    {
-      "src": "screenshots/route.png",
-      "sizes": "1280x720",
-      "type": "image/png",
-      "form_factor": "wide",
-      "label": "Find twisty motorcycle routes"
-    },
-    {
-      "src": "screenshots/nav.png",
-      "sizes": "1280x720",
-      "type": "image/png",
-      "form_factor": "wide",
-      "label": "Ride navigation with large, glanceable directions"
-    },
-    {
-      "src": "screenshots/mobile-route.png",
-      "sizes": "750x1334",
-      "type": "image/png",
-      "form_factor": "narrow",
-      "label": "Discover curvy roads on your phone"
-    }
-  ],
   "shortcuts": [
     {
       "name": "Find Curvy Route",

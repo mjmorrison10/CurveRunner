@@ -330,6 +330,18 @@
       <button id="btn-settings-pocket-calibrate" class="btn-primary">Calibrate for Pocket</button>
       <button id="btn-settings-pocket-disable" class="btn-secondary hidden">Disable Pocket Mode</button>
     </div>
+    <div style="margin-bottom:14px">
+      <p style="margin-bottom:6px;font-size:0.85rem;color:var(--text-dim)">Curvy Roads Filter</p>
+      <p style="font-size:0.75rem;color:var(--text-dim);margin-bottom:8px;">Hide short roads (cul-de-sacs, small housing tracks) when highlighting curves.</p>
+      <select id="curvy-min-length" style="width:100%;padding:10px;background:var(--panel);border:1px solid var(--border);color:var(--text);border-radius:8px;font-size:0.9rem;">
+        <option value="0">Show all roads</option>
+        <option value="100">At least 100 m</option>
+        <option value="300" selected>At least 300 m</option>
+        <option value="500">At least 500 m</option>
+        <option value="1000">At least 1 km</option>
+        <option value="2000">At least 2 km</option>
+      </select>
+    </div>
     <div class="row-btns"><button class="btn-secondary close-modal">Close</button></div>
   </div>
 

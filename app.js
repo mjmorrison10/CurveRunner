@@ -117,6 +117,7 @@ const CURVY_ROADS_MIN_ZOOM = 11;
 const CURVY_ROADS_TILE_ZOOM = 12; // tile grid used for incremental fetching
 let curvyRoadsFetchedTiles = new Set(); // keys of tiles already fetched this session
 let curvyRoadsFeatures = []; // accumulated GeoJSON features
+let curvyRoadsMinLengthM = parseInt(localStorage.getItem('curveRunner_curvyMinLengthM') || '300', 10);
 
 let userArrowMarker = null;
 let originalRoute = null;
@@ -623,6 +624,16 @@ function initUI() {
   document.getElementById('btn-hard-refresh')?.addEventListener('click', hardRefresh);
   document.getElementById('btn-update-now')?.addEventListener('click', hardRefresh);
   document.getElementById('btn-update-later')?.addEventListener('click', dismissUpdateModal);
+  const curvyMinLengthSelect = document.getElementById('curvy-min-length');
+  if (curvyMinLengthSelect) {
+    curvyMinLengthSelect.value = String(curvyRoadsMinLengthM);
+    curvyMinLengthSelect.addEventListener('change', (e) => {
+      curvyRoadsMinLengthM = parseInt(e.target.value, 10);
+      localStorage.setItem('curveRunner_curvyMinLengthM', String(curvyRoadsMinLengthM));
+      applyCurvyRoadsFilter();
+      showToast(`Curvy roads filter: ${curvyRoadsMinLengthM} m`);
+    });
+  }
 
   initPanelDrag();
 
@@ -3261,22 +3272,15 @@ async function signInWithGoogle() {
   if (!(await ensureFirebaseReady())) return;
   const provider = new firebase.auth.GoogleAuthProvider();
   try {
-    // Try popup first — it generally handles third-party cookie / extension blocking better.
-    await firebaseAuth.signInWithPopup(provider);
-    showToast('Signed in with Google');
+    // GitHub Pages sends Cross-Origin-Opener-Policy headers that break popup OAuth.
+    // Use redirect flow, which is compatible with static hosting.
+    sessionStorage.setItem('curveRunner_signingIn', 'true');
+    await firebaseAuth.signInWithRedirect(provider);
+    // Page reloads after redirect; getRedirectResult handles the rest
   } catch (e) {
+    sessionStorage.removeItem('curveRunner_signingIn');
     console.error('Google sign-in error', e);
-    if (e.code === 'auth/popup-blocked' || e.code === 'auth/popup-closed-by-user' || e.code === 'auth/cancelled-popup-request') {
-      // Popup was blocked by the browser or an extension. Fall back to redirect.
-      sessionStorage.setItem('curveRunner_signingIn', 'true');
-      try {
-        await firebaseAuth.signInWithRedirect(provider);
-      } catch (redirectErr) {
-        sessionStorage.removeItem('curveRunner_signingIn');
-        console.error('Google redirect fallback error', redirectErr);
-        showToast('Sign-in blocked. Try disabling extensions for this site.');
-      }
-    } else if (e.message && e.message.includes('network')) {
+    if (e.message && (e.message.includes('network') || e.message.includes('blocked'))) {
       showToast('Sign-in blocked by network/extension. Try disabling your ad blocker or privacy tool.');
     } else {
       showToast('Google sign-in failed: ' + e.message);
@@ -4073,15 +4077,15 @@ async function fetchRoadsForBounds(bounds) {
   }
 
   // Overpass QL — focused on roads riders actually care about.
-  // Motorways and trunk roads are usually straight, so we skip them to reduce load.
+  // Motorways/trunk are usually straight; residential areas are full of tiny cul-de-sacs.
+  // We keep primary/secondary/tertiary/unclassified and filter by length on the client.
   const query = `
-    [out:json][timeout:20];
+    [out:json][timeout:15];
     (
       way["highway"="primary"](${south},${west},${north},${east});
       way["highway"="secondary"](${south},${west},${north},${east});
       way["highway"="tertiary"](${south},${west},${north},${east});
       way["highway"="unclassified"](${south},${west},${north},${east});
-      way["highway"="residential"](${south},${west},${north},${east});
     );
     out body;
    >;
@@ -4095,9 +4099,15 @@ async function fetchRoadsForBounds(bounds) {
     });
 
     if (response.status === 429) {
-      curvyRoadsBackoff = Math.min(curvyRoadsBackoff * 2 + 2000, 60000);
+      curvyRoadsBackoff = Math.min(curvyRoadsBackoff * 2 + 3000, 60000);
       showToast('Overpass rate limit hit — slowing down curvy-roads updates');
       throw new Error('Overpass rate limit');
+    }
+    if (response.status === 504) {
+      // Gateway timeout: Overpass is overloaded. Back off but don't blow up the session.
+      curvyRoadsBackoff = Math.min(curvyRoadsBackoff + 5000, 60000);
+      showToast('Overpass is slow — retrying later');
+      throw new Error('Overpass timeout');
     }
     if (!response.ok) {
       console.error('Overpass API error:', response.status);
@@ -4105,7 +4115,7 @@ async function fetchRoadsForBounds(bounds) {
     }
 
     // Successful fetch reduces the backoff gradually.
-    curvyRoadsBackoff = Math.max(0, curvyRoadsBackoff - 3000);
+    curvyRoadsBackoff = Math.max(0, curvyRoadsBackoff - 4000);
 
     const data = await response.json();
     
@@ -4129,6 +4139,11 @@ async function fetchRoadsForBounds(bounds) {
         
         if (coordinates.length >= 2) {
           const curviness = calculateCurviness(coordinates);
+          let length = 0;
+          for (let i = 1; i < coordinates.length; i++) {
+            length += haversineDistance(coordinates[i - 1], coordinates[i]) * 1000;
+          }
+          // length is in meters
           features.push({
             type: 'Feature',
             geometry: {
@@ -4137,6 +4152,7 @@ async function fetchRoadsForBounds(bounds) {
             },
             properties: {
               curviness: curviness,
+              length: length,
               highway: el.tags?.highway || 'unknown'
             }
           });
@@ -4151,6 +4167,16 @@ async function fetchRoadsForBounds(bounds) {
   }
 }
 
+function getCurvyRoadsFilter() {
+  return ['all', ['>=', ['get', 'curviness'], 0.005], ['>=', ['get', 'length'], curvyRoadsMinLengthM]];
+}
+
+function applyCurvyRoadsFilter() {
+  if (map.getLayer(CURVY_ROADS_LAYER)) {
+    map.setFilter(CURVY_ROADS_LAYER, getCurvyRoadsFilter());
+  }
+}
+
 function addCurvyRoadsLayer() {
   if (!map.getSource(CURVY_ROADS_SOURCE)) {
     map.addSource(CURVY_ROADS_SOURCE, {
@@ -4158,12 +4184,12 @@ function addCurvyRoadsLayer() {
       data: { type: 'FeatureCollection', features: [] }
     });
 
-    // Only highlight roads that are actually curvy/twisty. Straight roads are filtered out.
+    // Only highlight roads that are actually curvy/twisty and long enough.
     map.addLayer({
       id: CURVY_ROADS_LAYER,
       type: 'line',
       source: CURVY_ROADS_SOURCE,
-      filter: ['>=', ['get', 'curviness'], 0.005],
+      filter: getCurvyRoadsFilter(),
       layout: {
         'line-join': 'round',
         'line-cap': 'round',
@@ -4225,24 +4251,35 @@ async function updateCurvyRoads() {
   if (tiles.length === 0) return;
 
   // Limit how many new tiles we fetch in one burst to stay polite to Overpass.
-  const tilesToFetch = tiles.slice(0, 6);
+  const tilesToFetch = tiles.slice(0, 2);
   curvyRoadsPending = true;
   curvyRoadsLastFetch = now;
 
+  let rateLimited = false;
   try {
     for (const t of tilesToFetch) {
       const key = `${t.z}/${t.x}/${t.y}`;
       if (curvyRoadsFetchedTiles.has(key)) continue;
       const bounds = tileToBounds(t.x, t.y, t.z);
-      const geojson = await fetchRoadsForBounds(bounds);
-      if (geojson && geojson.features) {
-        curvyRoadsFeatures.push(...geojson.features);
-        curvyRoadsFetchedTiles.add(key);
+      try {
+        const geojson = await fetchRoadsForBounds(bounds);
+        if (geojson && geojson.features) {
+          curvyRoadsFeatures.push(...geojson.features);
+          curvyRoadsFetchedTiles.add(key);
+        }
+      } catch (tileErr) {
+        if (tileErr.message && tileErr.message.includes('Overpass')) {
+          rateLimited = true;
+          break; // stop the batch, backoff will handle retry
+        }
+        // Other per-tile errors are logged and ignored so other tiles can proceed.
+        console.warn('Curvy roads tile fetch failed:', tileErr.message);
       }
     }
     const source = map.getSource(CURVY_ROADS_SOURCE);
     if (source) {
       source.setData({ type: 'FeatureCollection', features: curvyRoadsFeatures });
+      applyCurvyRoadsFilter();
     }
   } catch (e) {
     console.error('Error updating curvy roads:', e);
@@ -4250,10 +4287,11 @@ async function updateCurvyRoads() {
     curvyRoadsPending = false;
   }
 
-  // If there are more tiles left, schedule another batch.
+  // If there are more tiles left, schedule another batch with a longer polite delay.
   const remaining = getViewportTiles().filter(t => !curvyRoadsFetchedTiles.has(`${t.z}/${t.x}/${t.y}`));
   if (remaining.length > 0) {
-    curvyRoadsDebounce = setTimeout(updateCurvyRoads, Math.max(2000, curvyRoadsBackoff + 500));
+    const delay = rateLimited ? Math.max(3000, curvyRoadsBackoff + 1000) : 2500;
+    curvyRoadsDebounce = setTimeout(updateCurvyRoads, delay);
   }
 }
 
@@ -4281,6 +4319,7 @@ function toggleCurvyRoads() {
     if (map.getZoom() < CURVY_ROADS_MIN_ZOOM) {
       showToast('Zoom in to z11+ to load curvy roads');
     } else {
+      applyCurvyRoadsFilter();
       updateCurvyRoads();
     }
   } else {
