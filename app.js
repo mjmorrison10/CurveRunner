@@ -110,6 +110,10 @@ let curvyRoadsEnabled = false;
 const CURVY_ROADS_SOURCE = 'curvy-roads-source';
 const CURVY_ROADS_LAYER = 'curvy-roads-layer';
 let curvyRoadsDebounce = null;
+let curvyRoadsBackoff = 0;   // ms to wait after a 429
+let curvyRoadsLastFetch = 0; // timestamp of last fetch
+let curvyRoadsPending = false; // prevent concurrent fetches
+const CURVY_ROADS_MIN_ZOOM = 11;
 
 let userArrowMarker = null;
 let originalRoute = null;
@@ -4061,17 +4065,15 @@ async function fetchRoadsForBounds(bounds) {
   // Guard: never query a huge area (zoomed-out view) — that would pull far too much
   // data from Overpass and freeze the map. Only fetch when the viewport is reasonably small.
   const diagKm = haversineDistance([west, south], [east, north]);
-  if (diagKm > 35) {
+  if (diagKm > 25) {
     return { type: 'FeatureCollection', features: [] };
   }
 
-  // Overpass QL — significant roads only. Footways, paths, cycleways, service roads and
-  // tracks are omitted to keep the payload small and the layer focused on real riding roads.
+  // Overpass QL — focused on roads riders actually care about.
+  // Motorways and trunk roads are usually straight, so we skip them to reduce load.
   const query = `
-    [out:json][timeout:25];
+    [out:json][timeout:20];
     (
-      way["highway"="motorway"](${south},${west},${north},${east});
-      way["highway"="trunk"](${south},${west},${north},${east});
       way["highway"="primary"](${south},${west},${north},${east});
       way["highway"="secondary"](${south},${west},${north},${east});
       way["highway"="tertiary"](${south},${west},${north},${east});
@@ -4089,11 +4091,19 @@ async function fetchRoadsForBounds(bounds) {
       body: new URLSearchParams({ data: query })
     });
 
+    if (response.status === 429) {
+      curvyRoadsBackoff = Math.min(curvyRoadsBackoff * 2 + 2000, 60000);
+      showToast('Overpass rate limit hit — slowing down curvy-roads updates');
+      throw new Error('Overpass rate limit');
+    }
     if (!response.ok) {
       console.error('Overpass API error:', response.status);
       return { type: 'FeatureCollection', features: [] };
     }
-    
+
+    // Successful fetch reduces the backoff gradually.
+    curvyRoadsBackoff = Math.max(0, curvyRoadsBackoff - 3000);
+
     const data = await response.json();
     
     // Convert OSM ways to GeoJSON features
@@ -4175,8 +4185,20 @@ function addCurvyRoadsLayer() {
 }
 
 async function updateCurvyRoads() {
-  if (!map || !curvyRoadsEnabled) return;
-  
+  if (!map || !curvyRoadsEnabled || curvyRoadsPending) return;
+  if (map.getZoom() < CURVY_ROADS_MIN_ZOOM) return;
+
+  const now = Date.now();
+  const waitUntil = curvyRoadsLastFetch + curvyRoadsBackoff;
+  if (now < waitUntil) {
+    // Still in cooldown — schedule a retry when the backoff expires.
+    curvyRoadsDebounce = setTimeout(updateCurvyRoads, waitUntil - now + 100);
+    return;
+  }
+
+  curvyRoadsPending = true;
+  curvyRoadsLastFetch = now;
+
   const bounds = map.getBounds();
   const boundsArray = [
     bounds.getWest(),
@@ -4184,7 +4206,7 @@ async function updateCurvyRoads() {
     bounds.getEast(),
     bounds.getNorth()
   ];
-  
+
   try {
     const geojson = await fetchRoadsForBounds(boundsArray);
     const source = map.getSource(CURVY_ROADS_SOURCE);
@@ -4193,32 +4215,44 @@ async function updateCurvyRoads() {
     }
   } catch (e) {
     console.error('Error updating curvy roads:', e);
+  } finally {
+    curvyRoadsPending = false;
   }
 }
 
 function debouncedUpdateCurvyRoads() {
   if (curvyRoadsDebounce) clearTimeout(curvyRoadsDebounce);
-  curvyRoadsDebounce = setTimeout(updateCurvyRoads, 500);
+  // Wait longer than before (2s) and skip updates while the map is still animating.
+  curvyRoadsDebounce = setTimeout(() => {
+    if (!map || !map.isMoving()) {
+      updateCurvyRoads();
+    } else {
+      debouncedUpdateCurvyRoads();
+    }
+  }, 2000);
 }
 
 function toggleCurvyRoads() {
   curvyRoadsEnabled = !curvyRoadsEnabled;
   const btn = document.getElementById('btn-curvy-roads');
-  
+
   if (curvyRoadsEnabled) {
     btn.classList.add('active');
     if (map.getLayer(CURVY_ROADS_LAYER)) {
       map.setLayoutProperty(CURVY_ROADS_LAYER, 'visibility', 'visible');
     }
-    updateCurvyRoads();
-    if (map.getZoom() < 11) {
-      showToast('Zoom in closer to load curvy roads');
+    if (map.getZoom() < CURVY_ROADS_MIN_ZOOM) {
+      showToast('Zoom in to z11+ to load curvy roads');
+    } else {
+      updateCurvyRoads();
     }
   } else {
     btn.classList.remove('active');
     if (map.getLayer(CURVY_ROADS_LAYER)) {
       map.setLayoutProperty(CURVY_ROADS_LAYER, 'visibility', 'none');
     }
+    // Clear any pending fetch so disabling stops network traffic immediately.
+    if (curvyRoadsDebounce) clearTimeout(curvyRoadsDebounce);
   }
 }
 
